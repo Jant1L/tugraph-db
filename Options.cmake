@@ -1,6 +1,6 @@
 set(LGRAPH_VERSION_MAJOR 4)
-set(LGRAPH_VERSION_MINOR 1)
-set(LGRAPH_VERSION_PATCH 0)
+set(LGRAPH_VERSION_MINOR 5)
+set(LGRAPH_VERSION_PATCH 2)
 
 # options
 option(ENABLE_WALL "Enable all compiler's warning messages." ON)
@@ -10,14 +10,6 @@ if (ENABLE_WALL)
 else (ENABLE_WALL)
     message("Wall is disabled.")
 endif (ENABLE_WALL)
-
-option(ENABLE_BOOST_STACKTRACE "Enable boost stacktrace." OFF)
-if (ENABLE_BOOST_STACKTRACE)
-    message("Boost stacktrace is enabled.")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DLGRAPH_ENABLE_BOOST_STACKTRACE=1")
-else (ENABLE_BOOST_STACKTRACE)
-    message("Boost stacktrace is disabled.")
-endif (ENABLE_BOOST_STACKTRACE)
 
 option(USE_MOCK_KV "Use mock kv-store." OFF)
 if (USE_MOCK_KV)
@@ -90,6 +82,11 @@ option(BUILD_PROCEDURE "Build procedure & learn" ON)
 if (BUILD_PROCEDURE)
     message("Build procedures.")
 endif (BUILD_PROCEDURE)
+
+option(WITH_TESTS "build with tests" ON)
+if (WITH_TESTS)
+    message("Build with tests.")
+endif (WITH_TESTS)
 
 # disable krb5
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DOPENSSL_NO_KRB5=1")
@@ -184,9 +181,3 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         ADD_COMPILE_OPTIONS($<$<COMPILE_LANGUAGE:CXX>:${CXX_COMPILE_FLAG}>)
     ENDFOREACH ()
 endif ()
-
-if (ENABLE_PREDOWNLOAD_DEPENDS_PACKAGE)
-    execute_process(COMMAND /bin/sh install.sh
-            WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/src/python/FMA_shell/pkg)
-endif ()
-

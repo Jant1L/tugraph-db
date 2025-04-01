@@ -465,10 +465,7 @@ class OpMerge : public OpBase {
                 .append(" vertices, merged ")
                 .append(std::to_string(ctx->result_info_->statistics.edges_created))
                 .append(" edges.");
-            // ctx->result_info_->header.colums.emplace_back("<SUMMARY>");
-            auto header = ctx->result_->Header();
-            header.emplace_back(std::make_pair("<SUMMARY>", lgraph_api::LGraphType::STRING));
-            ctx->result_->ResetHeader(header);
+            CYPHER_THROW_ASSERT(ctx->result_->Header().size() == 1);
             CYPHER_THROW_ASSERT(record);
             record->values.clear();
             record->AddConstant(lgraph::FieldData(summary));
@@ -502,7 +499,8 @@ class OpMerge : public OpBase {
         for (auto child : children) {
             child->Initialize(ctx);
         }
-        record = children.empty() ? std::make_shared<Record>(sym_tab_.symbols.size(), &sym_tab_)
+        record = children.empty() ?
+            std::make_shared<Record>(sym_tab_.symbols.size(), &sym_tab_, ctx->param_tab_)
                                   : children[0]->record;
         return OP_OK;
     }

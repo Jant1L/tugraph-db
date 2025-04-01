@@ -27,6 +27,8 @@
 #include "procedure/procedure.h"
 #include "core/defs.h"
 #include "db/galaxy.h"
+#include "cypher/arithmetic/arithmetic_expression.h"
+#include "cypher/filter/filter.h"
 
 #if __APPLE__
 #ifdef TRUE
@@ -52,7 +54,9 @@ class CypherBaseVisitor : public LcypherVisitor {
     std::string _curr_procedure_name;
     /* alias carry between query parts */
     std::vector<std::pair<std::string, cypher::SymbolNode::Type>> _carry;
-    std::string _listcompr_placeholder = "";
+    std::string _listcompr_placeholder;
+    std::unordered_map<std::string, std::set<std::string>> _node_property;
+    std::unordered_map<std::string, std::set<std::string>> _rel_property;
     enum _ClauseType : uint32_t {
         NA = 0x0,
         MATCH = 0x1,
@@ -110,10 +114,11 @@ class CypherBaseVisitor : public LcypherVisitor {
         }
         return false;
     }
+    void AstRewrite(cypher::RTContext *ctx);
 
  public:
     CypherBaseVisitor() = default;
-    // TODO(anyone): 考虑在parser visit阶段之后，再处理yield items
+    // TODO(anyone): consider yield items after parser visit
     CypherBaseVisitor(cypher::RTContext *ctx, antlr4::tree::ParseTree *tree) : ctx_(ctx) {
         // The default implementation of visit()
         tree->accept(this);
@@ -121,6 +126,7 @@ class CypherBaseVisitor : public LcypherVisitor {
         for (auto &q : _query) {
             for (auto &p : q.parts) p.Enrich();
         }
+        AstRewrite(ctx);
     }
 
     /**
@@ -144,6 +150,12 @@ class CypherBaseVisitor : public LcypherVisitor {
     }
 
     const std::vector<SglQuery> &GetQuery() const { return _query; }
+
+    const std::unordered_map<std::string, std::set<std::string>>&
+    GetNodeProperty() const {return _node_property;}
+
+    const std::unordered_map<std::string, std::set<std::string>>&
+    GetRelProperty() const {return _rel_property;}
 
     CmdType CommandType() const { return _cmd_type; }
 
@@ -257,7 +269,7 @@ class CypherBaseVisitor : public LcypherVisitor {
         AddSymbol(variable, cypher::SymbolNode::CONSTANT, var_scope);
         Clause clause;
         clause.type = Clause::UNWIND;
-        clause.data = std::make_shared<Clause::TYPE_UNWIND>(e, variable);
+        clause.data = std::make_shared<Clause::TYPE_UNWIND>(e, variable, false);
         _query[_curr_query].parts[_curr_part].AddClause(clause);
         _LeaveClauseUNWIND();
         return 0;
@@ -335,7 +347,7 @@ class CypherBaseVisitor : public LcypherVisitor {
         } else {
             variable = ctx->oC_Variable()->getText();
             if (!_IsVariableDefined(variable)) {
-                throw lgraph::InputError(FMA_FMT("Variable `{}` not defined", variable));
+                THROW_CODE(InputError, "Variable `{}` not defined", variable);
             }
             for (auto &c : ctx->children) {
                 if (c->getText() == "+=" || c->getText() == "=") {
@@ -360,8 +372,7 @@ class CypherBaseVisitor : public LcypherVisitor {
         for (auto &ex : ctx->oC_Expression()) {
             expr.emplace_back(std::any_cast<Expression>(visit(ex)));
             if (expr.back().type != Expression::VARIABLE) {
-                throw lgraph::InputError(
-                    FMA_FMT("Type mismatch: expected Node, Path or Relationship"));
+                THROW_CODE(InputError, "Type mismatch: expected Node, Path or Relationship");
             }
             const auto &variable = expr.back().ToString();
             const auto &symbols = _query[_curr_query].parts[_curr_part].symbol_table.symbols;
@@ -373,8 +384,7 @@ class CypherBaseVisitor : public LcypherVisitor {
             if (variable_type != cypher::SymbolNode::NODE &&
                 variable_type != cypher::SymbolNode::RELATIONSHIP &&
                 variable_type != cypher::SymbolNode::NAMED_PATH) {
-                throw lgraph::InputError(
-                    FMA_FMT("Type mismatch: expected Node, Path or Relationship"));
+                THROW_CODE(InputError, "Type mismatch: expected Node, Path or Relationship");
             }
         }
         Clause clause;
@@ -505,9 +515,9 @@ class CypherBaseVisitor : public LcypherVisitor {
             };
             for (auto &yield_item : yield_items) {
                 if (!pp->ContainsYieldItem(yield_item)) {
-                    throw lgraph::InputError(
-                        FMA_FMT("yield item [{}] is not exsit, should be one of {}", yield_item,
-                                concat_str(pp)));
+                    THROW_CODE(InputError,
+                        "yield item [{}] is not exsit, should be one of {}", yield_item,
+                                concat_str(pp));
                 }
                 auto type = lgraph_api::LGraphType::NUL;
                 for (auto &r : pp->signature.result_list) {
@@ -541,15 +551,15 @@ class CypherBaseVisitor : public LcypherVisitor {
                 lgraph_api::SigSpec *sig_spec = nullptr;
                 if (!pm->GetPluginSignature(type, ctx_->user_, names[2], &sig_spec) ||
                     sig_spec == nullptr) {
-                    throw lgraph::InputError(FMA_FMT("cannot find procedure name {}", names[2]));
+                    THROW_CODE(InputError, "cannot find procedure name {}", names[2]);
                 }
                 for (auto &yield_item : yield_items) {
                     const auto iter = std::find_if(
                         sig_spec->result_list.cbegin(), sig_spec->result_list.cend(),
                         [&yield_item](const auto &param) { return yield_item == param.name; });
                     if (iter == sig_spec->result_list.cend()) {
-                        throw lgraph::InputError(
-                            FMA_FMT("yield item [{}] is not exist", yield_item));
+                        THROW_CODE(InputError,
+                            "yield item [{}] is not exist", yield_item);
                     }
                     auto type = lgraph_api::LGraphType::NUL;
                     for (auto &r : sig_spec->result_list) {
@@ -644,8 +654,14 @@ class CypherBaseVisitor : public LcypherVisitor {
                 }
                 // sort_item alias is not in return_item
                 if (!sort_idx_found) {
-                    throw lgraph::InputError(
-                        FMA_FMT("Variable `{}` not defined", sort_item.first.ToString()));
+                    // THROW_CODE(InputError,
+                    //     "Variable `{}` not defined", sort_item.first.ToString());
+                    auto expr = sort_item.first;
+                    auto alias = sort_item.first.ToString();
+                    bool isHidden = true;
+                    return_items.emplace_back(std::make_tuple(expr, alias, isHidden));
+                    int cur_sort_item_idx = return_items.size() - 1;
+                    sort_items_idx.emplace_back(cur_sort_item_idx, sort_item.second);
                 }
             }
             CYPHER_THROW_ASSERT(sort_items_idx.size() == sort_items.size());
@@ -702,7 +718,7 @@ class CypherBaseVisitor : public LcypherVisitor {
             AddSymbol(as_variable.empty() ? variable : as_variable, type,
                       cypher::SymbolNode::LOCAL);
         }
-        return std::make_tuple(expr, as_variable);
+        return std::make_tuple(expr, as_variable, false);
     }
 
     std::any visitOC_Order(LcypherParser::OC_OrderContext *ctx) override {
@@ -735,7 +751,7 @@ class CypherBaseVisitor : public LcypherVisitor {
     std::any visitOC_Hint(LcypherParser::OC_HintContext *ctx) override {
         const auto &var = ctx->oC_Variable()->getText();
         if (!_IsVariableDefined(var)) {
-            throw lgraph::InputError(FMA_FMT("Variable `{}` not defined", var));
+            THROW_CODE(InputError, "Variable `{}` not defined", var);
         }
 
         if (ctx->JOIN() && ctx->ON()) {
@@ -821,6 +837,13 @@ class CypherBaseVisitor : public LcypherVisitor {
         if (ctx->oC_Properties() != nullptr) {
             TUP_PROPERTIES tmp = std::any_cast<TUP_PROPERTIES>(visit(ctx->oC_Properties()));
             properties = std::move(tmp);
+            for (const auto& pair : std::get<0>(properties).Map()) {
+                for (auto& label : node_labels) {
+                    if (!label.empty()) {
+                        _node_property[label].emplace(pair.first);
+                    }
+                }
+            }
         }
         AddSymbol(variable, cypher::SymbolNode::NODE, cypher::SymbolNode::LOCAL);
         return std::make_tuple(variable, node_labels, properties);
@@ -884,19 +907,39 @@ class CypherBaseVisitor : public LcypherVisitor {
         if (ctx->oC_Properties() != nullptr) {
             TUP_PROPERTIES tmp = std::any_cast<TUP_PROPERTIES>(visit(ctx->oC_Properties()));
             properties = tmp;
+            for (const auto& pair : std::get<0>(properties).Map()) {
+                for (auto &rel_label : relationship_types) {
+                    if (!rel_label.empty()) {
+                        _rel_property[rel_label].emplace(pair.first);
+                    }
+                }
+            }
         }
         AddSymbol(variable, cypher::SymbolNode::RELATIONSHIP, cypher::SymbolNode::LOCAL);
         return std::make_tuple(variable, relationship_types, range_literal, properties);
     }
 
     std::any visitOC_Properties(LcypherParser::OC_PropertiesContext *ctx) override {
-        if (ctx->oC_MapLiteral() == nullptr) {
-            CYPHER_TODO();
-            return visitChildren(ctx);
-        }
-        Expression map_literal = std::any_cast<Expression>(visit(ctx->oC_MapLiteral()));
         std::string parameter;
-        return std::make_tuple(map_literal, parameter);
+        if (ctx->oC_MapLiteral()) {
+            Expression map_literal = std::any_cast<Expression>(visit(ctx->oC_MapLiteral()));
+            return std::make_tuple(map_literal, parameter);
+        } else if (ctx->oC_Parameter()) {
+            std::string parameter_val = ctx->oC_Parameter()->getText();
+            if (ctx_->bolt_parameters_) {
+                auto iter = ctx_->bolt_parameters_->find(parameter_val);
+                if (iter == ctx_->bolt_parameters_->end()) {
+                    throw lgraph::CypherException(
+                        FMA_FMT("Parameter {} missing value", parameter_val));
+                }
+//                if (iter->second.type != Expression::DataType::MAP) {
+//                    throw lgraph::CypherException(
+//                        FMA_FMT("Parameter {} should be MAP type", parameter_val));
+//                }
+                return std::make_tuple(iter->second, parameter);
+            }
+        }
+        CYPHER_TODO();
     }
 
     std::any visitOC_RelationshipTypes(
@@ -905,6 +948,7 @@ class CypherBaseVisitor : public LcypherVisitor {
         for (auto &ctx_name : ctx->oC_RelTypeName()) {
             std::string name = std::any_cast<std::string>(visit(ctx_name));
             relationship_types.emplace_back(name);
+            _rel_property.emplace(name, std::set<std::string>{});
         }
         return relationship_types;
     }
@@ -919,6 +963,7 @@ class CypherBaseVisitor : public LcypherVisitor {
         for (auto &ctx_label : ctx->oC_NodeLabel()) {
             std::string label = std::any_cast<std::string>(visit(ctx_label));
             labels.emplace_back(label);
+            _node_property.emplace(label, std::set<std::string>{});
         }
         return labels;
     }
@@ -1373,7 +1418,7 @@ class CypherBaseVisitor : public LcypherVisitor {
             // result, here `_listcompr_placeholder` = "x"
             //
             // I try to add symbol in `visitOC_ListComprephension` function, a cypher todo
-            // exception is thrown during exection. Fix this problem makes a lot adjustment
+            // exception is thrown during execution. Fix this problem makes a lot adjustment
             // or refactor work, may break the whole semantic analysis robust.
             //
             // Also, the `_InClauseORDERBY()` condition is a WORKAROUND for that, `AddSymbol` cannot
@@ -1390,7 +1435,7 @@ class CypherBaseVisitor : public LcypherVisitor {
             // `_listcompr_placeholder`
             if (!_InClauseORDERBY() && !_IsVariableDefined(var) &&
                 (_listcompr_placeholder.empty() || var != _listcompr_placeholder)) {
-                throw lgraph::InputError(FMA_FMT("Variable `{}` not defined", var));
+                THROW_CODE(InputError, "Variable `{}` not defined", var);
             }
 
             Expression expr;
@@ -1399,6 +1444,13 @@ class CypherBaseVisitor : public LcypherVisitor {
             return expr;
         } else if (ctx->oC_Parameter()) {
             std::string parameter = ctx->oC_Parameter()->getText();
+            if (ctx_->bolt_parameters_) {
+                auto iter = ctx_->bolt_parameters_->find(parameter);
+                if (iter == ctx_->bolt_parameters_->end()) {
+                    throw lgraph::CypherException(FMA_FMT("Parameter {} missing value", parameter));
+                }
+                return iter->second;
+            }
             AddSymbol(parameter, cypher::SymbolNode::PARAMETER, cypher::SymbolNode::LOCAL);
             Expression expr;
             expr.type = Expression::PARAMETER;
@@ -1413,7 +1465,7 @@ class CypherBaseVisitor : public LcypherVisitor {
             auto list = std::make_shared<Expression::EXPR_TYPE_LIST>();
             Expression function_name;
             function_name.type = Expression::STRING;
-            function_name.data = std::make_shared<std::string>("count");
+            function_name.data = std::make_shared<std::string>("count(*)");
             list->emplace_back(function_name);
             Expression ret;
             ret.type = Expression::FUNCTION;
@@ -1444,10 +1496,16 @@ class CypherBaseVisitor : public LcypherVisitor {
             return visitChildren(ctx);
         } else if (ctx->StringLiteral() != nullptr) {
             auto str = ctx->StringLiteral()->getText();
-            CYPHER_THROW_ASSERT(!str.empty() && (str[0] == '\'' || str[0] == '\"') &&
-                                (str[str.size() - 1] == '\'' || str[str.size() - 1] == '\"'));
+            std::string res;
+            // remove escape character
+            for (size_t i = 1; i < str.length() - 1; i++) {
+                if (str[i] == '\\') {
+                    i++;
+                }
+                res.push_back(str[i]);
+            }
             expr.type = Expression::STRING;
-            expr.data = std::make_shared<std::string>(str.substr(1, str.size() - 2));
+            expr.data = std::make_shared<std::string>(std::move(res));
             return expr;
         } else if (ctx->oC_BooleanLiteral() != nullptr) {
             return visitChildren(ctx);
@@ -1824,8 +1882,9 @@ class CypherBaseVisitor : public LcypherVisitor {
         // TODO(anyone) The Lcypher parser parse the following `WORD` in StandaloneCall parameter as
         // VARIABLE IT SHOULD BE PARSED AS KEYWORD. THIS IS A WORKAROUND WAY. SEE ISSUE: #164
         static const std::vector<std::string> excluded_set = {
-            "INT8",   "INT16", "INT32",    "INT64", "FLOAT", "DOUBLE",
-            "STRING", "DATE",  "DATETIME", "BLOB",  "BOOL",
+            "INT8",       "INT16",   "INT32",    "INT64",        "FLOAT", "DOUBLE",
+            "STRING",     "DATE",    "DATETIME", "BLOB",         "BOOL",  "POINT",
+            "LINESTRING", "POLYGON", "SPATIAL",  "FLOAT_VECTOR"
         };
         if (std::find_if(excluded_set.begin(), excluded_set.end(), [&var](const std::string &kw) {
                 std::string upper_var(var.size(), ' ');

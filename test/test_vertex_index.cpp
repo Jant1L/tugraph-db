@@ -330,9 +330,13 @@ int CURDVertexWithTooLongKey() {
         std::string tmp(lgraph::_detail::MAX_KEY_SIZE + 100, 'b');
         for (int32_t i = 0; i < 100; ++i) {
             std::string key = std::to_string(i).append(str);
-            UT_EXPECT_TRUE(idx.Add(*txn, Value::ConstRef(key), i));
-            VertexIndexIterator it_add = idx.GetUnmanagedIterator(*txn, Value::ConstRef(key),
-                                                                Value::ConstRef(key));
+            Value cut_key = Value(Value::ConstRef(key).Data(),
+                                    lgraph::_detail::MAX_KEY_SIZE);
+            UT_EXPECT_ANY_THROW(idx.Add(*txn, Value::ConstRef(key), i));
+            idx.Add(*txn, cut_key, i);
+
+            VertexIndexIterator it_add = idx.GetUnmanagedIterator(*txn, cut_key,
+                                                                  cut_key);
             UT_EXPECT_TRUE(it_add.IsValid());
             UT_EXPECT_EQ(it_add.GetKey().AsString(), std::to_string(i) +
                          std::string(lgraph::_detail::MAX_KEY_SIZE - bytes_count(i), 'a'));
@@ -348,10 +352,14 @@ int CURDVertexWithTooLongKey() {
 
         for (int32_t i = 0; i < 100; ++i) {
             std::string ok = std::to_string(i).append(str);
+            Value cut_ok = Value(Value::ConstRef(ok).Data(),
+                                  lgraph::_detail::MAX_KEY_SIZE);
             std::string nk = std::to_string(i).append(tmp);
-            UT_EXPECT_TRUE(idx.Update(*txn, Value::ConstRef(ok), Value::ConstRef(nk), i));
+            Value cut_nk = Value(Value::ConstRef(nk).Data(),
+                                 lgraph::_detail::MAX_KEY_SIZE);
+            UT_EXPECT_TRUE(idx.Update(*txn, cut_ok, cut_nk, i));
             VertexIndexIterator it_add = idx.GetUnmanagedIterator(*txn,
-                                             Value::ConstRef(nk), Value::ConstRef(nk));
+                                             cut_nk, cut_nk);
             UT_EXPECT_TRUE(it_add.IsValid());
             UT_EXPECT_EQ(it_add.GetKey().AsString(), std::to_string(i) +
                                   std::string(lgraph::_detail::MAX_KEY_SIZE - bytes_count(i), 'b'));
@@ -359,9 +367,11 @@ int CURDVertexWithTooLongKey() {
         }
         for (int32_t i = 0; i < 100; ++i) {
             std::string key = std::to_string(i).append(tmp);
-            UT_EXPECT_TRUE(idx.Delete(*txn, Value::ConstRef(key), i));
+            Value cut_key = Value(Value::ConstRef(key).Data(),
+                                 lgraph::_detail::MAX_KEY_SIZE);
+            UT_EXPECT_TRUE(idx.Delete(*txn, cut_key, i));
             VertexIndexIterator it_del = idx.GetUnmanagedIterator(*txn,
-                                                   Value::ConstRef(key), Value::ConstRef(key));
+                                                   cut_key, cut_key);
             UT_EXPECT_FALSE(it_del.IsValid());
         }
 
@@ -375,9 +385,37 @@ int CURDVertexWithTooLongKey() {
     }
     return 0;
 }
+
+int TestVRefreshContentIfKvIteratorModified() {
+    // test EdgeIndex
+    auto store = std::make_unique<LMDBKvStore>("./testdb", (size_t)1 << 30, true);
+    // Start test, see if we already has a db
+    auto txn = store->CreateWriteTxn();
+    store->DropAll(*txn);
+    txn->Commit();
+    // NonuniqueIndex vertex index
+    {
+        txn = store->CreateWriteTxn();
+        auto idx_tab = VertexIndex::OpenTable(*txn, *store, "refresh",
+                                              FieldType::INT32, lgraph::IndexType::NonuniqueIndex);
+        VertexIndex idx(std::move(idx_tab), FieldType::INT32, lgraph::IndexType::NonuniqueIndex);
+        UT_EXPECT_TRUE(idx.Add(*txn, Value::ConstRef(10), 10));
+        txn->Commit();
+
+
+        txn = store->CreateWriteTxn();
+        VertexIndexIterator it = idx.GetUnmanagedIterator(*txn,
+                                             Value::ConstRef(10), Value::ConstRef(10));
+        UT_EXPECT_TRUE(idx.Update(*txn, Value::ConstRef(10), Value::ConstRef(1), 10));
+        it.RefreshContentIfKvIteratorModified();
+    }
+    return 0;
+}
+
 TEST_F(TestVertexIndex, VertexIndex) {
     TestVertexIndexImpl();
     CURDVertexWithTooLongKey();
+    TestVRefreshContentIfKvIteratorModified();
 }
 
 TEST_F(TestVertexIndex, addIndexDetach) {

@@ -22,7 +22,7 @@
 namespace cypher {
 
 class NodeIndexSeek : public OpBase {
-    std::unique_ptr<lgraph::Transaction> *txn_ = nullptr;
+    // std::unique_ptr<lgraph::Transaction> *txn_ = nullptr;
     Node *node_ = nullptr;
     lgraph::VIter *it_ = nullptr;           // also can be derived from node
     std::string alias_;                     // also can be derived from node
@@ -64,13 +64,12 @@ class NodeIndexSeek : public OpBase {
 
     OpResult Initialize(RTContext *ctx) override {
         // allocate a new record
-        record = std::make_shared<Record>(rec_length_, sym_tab_);
+        record = std::make_shared<Record>(rec_length_, sym_tab_, ctx->param_tab_);
         record->values[node_rec_idx_].type = Entry::NODE;
         record->values[node_rec_idx_].node = node_;
-        record->SetParameter(ctx->param_tab_);
 
         auto &pf = node_->Prop();
-        field_ = pf.type != Property::NUL ? pf.field : field_;  // 优先用prop形式指定的field
+        field_ = pf.type != Property::NUL ? pf.field : field_;  // use pf.field if applicable
         if (pf.type == Property::VALUE) {
             target_values_.emplace_back(pf.value);
         } else if (pf.type == Property::PARAMETER) {
@@ -90,7 +89,7 @@ class NodeIndexSeek : public OpBase {
             it_->Initialize(ctx->txn_->GetTxn().get(), lgraph::VIter::INDEX_ITER, node_->Label(),
                             field_, value, value);
         } else {
-            // Weak index iterator
+            // Weak index iterator]
             it_->Initialize(ctx->txn_->GetTxn().get(), node_->Label(), field_, value);
         }
         consuming_ = false;
@@ -105,9 +104,7 @@ class NodeIndexSeek : public OpBase {
          * */
         node_->SetVid(-1);
 
-        if (HandOff() == OP_OK) {
-            return OP_OK;
-        }
+        if (HandOff() == OP_OK) return OP_OK;
         while ((size_t)value_rec_idx_ < target_values_.size() - 1) {
             value_rec_idx_++;
             auto value = target_values_[value_rec_idx_];

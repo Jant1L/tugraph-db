@@ -81,6 +81,8 @@ class LMDBKvTable final : public KvTable {
      */
     Value GetValue(KvTransaction& txn, const Value& key, bool for_update = false) override;
 
+    bool GetValue(KvTransaction& txn, const Value& key, Value& val) override;
+
     /**
      * Gets number of k-v pairs in the table.
      *
@@ -158,11 +160,18 @@ class LMDBKvTable final : public KvTable {
     int CompareKey(KvTransaction& txn, const Value& k1, const Value& k2) const override;
 
     /**
-     * Drops this table. Please make sure no other thread will access this table after this call.
+     * Empty this table.
      *
-     * \param [in,out]  txn             The transaction.
+     * \param [in,out]  txn    The transaction.
      */
     void Drop(KvTransaction& txn) override;
+
+    /**
+     * Delete this table.
+     *
+     * \param [in,out]  txn    The transaction.
+     */
+    void Delete(KvTransaction& txn) override;
 
     /**
      * Gets the name of the table.

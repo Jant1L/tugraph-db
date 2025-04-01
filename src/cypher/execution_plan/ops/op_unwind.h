@@ -19,11 +19,12 @@
 
 #include "parser/clause.h"
 #include "cypher/execution_plan/ops/op.h"
+#include "cypher/arithmetic/arithmetic_expression.h"
 
 namespace cypher {
 
 class Unwind : public OpBase {
-    std::vector<lgraph::FieldData> list_;  // List which the unwind operation is performed on.
+    std::vector<cypher::FieldData> list_;  // List which the unwind operation is performed on.
     ArithExprNode exp_;                    // Arithmetic expression (evaluated as an array).
     std::string resolved_name_;
     int rec_idx_ = 0;
@@ -53,7 +54,7 @@ class Unwind : public OpBase {
         if (children.size() > 1) CYPHER_TODO();
         if (children.empty()) {
             // No child operation, list must be static.
-            record = std::make_shared<Record>(sym_tab_->symbols.size(), sym_tab_);
+            record = std::make_shared<Record>(sym_tab_->symbols.size(), sym_tab_, ctx->param_tab_);
             // Set parameter, use uniform runtime context
             for (auto &p : ctx->param_tab_) {
                 auto it = record->symbol_table->symbols.find(p.first);

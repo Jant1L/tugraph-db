@@ -20,14 +20,19 @@
 #include <random>
 #include <stack>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
+#include <regex>
 #include "cypher/cypher_exception.h"
 #include "cypher/cypher_types.h"
+#include "cypher/procedure/utils.h"
 #include "cypher/parser/expression.h"
 #include "cypher/parser/clause.h"
 #include "cypher/parser/symbol_table.h"
-#include "cypher/procedure/utils.h"
 #include "cypher/arithmetic/arithmetic_expression.h"
+#include "cypher/filter/filter.h"
+#include "db/galaxy.h"
 
 #define CHECK_NODE(e)                                                                      \
     do {                                                                                   \
@@ -349,6 +354,12 @@ cypher::FieldData BuiltinFunction::Range(RTContext *ctx, const Record &record,
     auto start_i = start.constant.scalar.integer();
     auto end_i = end.constant.scalar.integer();
     cypher::FieldData ret = cypher::FieldData::Array(0);
+    if (step_i == 0) {
+        THROW_CODE(InvalidParameter, "range() arg 3 must not be zero");
+    }
+    if ((step_i > 0 && start_i >= end_i) || (step_i < 0 && start_i <= end_i)) {
+        return ret;
+    }
     for (auto i = start_i; i <= end_i; i += step_i) {
         ret.array->emplace_back(i);
     }
@@ -733,7 +744,7 @@ cypher::FieldData BuiltinFunction::DateComponent(RTContext *ctx, const Record &r
     auto YMD = d.GetYearMonthDay();
     auto it = COMPONENT_MAP.find(component.constant.scalar.AsString());
     if (it == COMPONENT_MAP.end())
-        throw ::lgraph::InputError("Invalid input: " + component.constant.scalar.AsString());
+        THROW_CODE(InputError, "Invalid input: " + component.constant.scalar.AsString());
     switch (it->second) {
     case 0:
         return cypher::FieldData(::lgraph::FieldData(YMD.year));
@@ -742,7 +753,7 @@ cypher::FieldData BuiltinFunction::DateComponent(RTContext *ctx, const Record &r
     case 2:
         return cypher::FieldData(::lgraph::FieldData(static_cast<int64_t>(YMD.day)));
     default:
-        throw ::lgraph::InternalError("");
+        THROW_CODE(InternalError);
     }
 }
 
@@ -751,7 +762,7 @@ cypher::FieldData BuiltinFunction::DateTime(RTContext *ctx, const Record &record
     if (args.size() > 2) CYPHER_ARGUMENT_ERROR();
     if (args.size() == 1) {
         // datetime() Returns the current DateTime.
-        return cypher::FieldData(::lgraph::FieldData(::lgraph::DateTime::Now()));
+        return cypher::FieldData(::lgraph::FieldData(::lgraph::DateTime::LocalNow()));
     } else {
         CYPHER_THROW_ASSERT(args.size() == 2);
         // datetime(string) Returns a DateTime by parsing a string.
@@ -788,7 +799,7 @@ cypher::FieldData BuiltinFunction::DateTimeComponent(RTContext *ctx, const Recor
     auto ymdhmsf = dt.GetYMDHMSF();
     auto it = COMPONENT_MAP.find(component.constant.scalar.AsString());
     if (it == COMPONENT_MAP.end())
-        throw ::lgraph::InputError("Invalid input: " + component.constant.scalar.AsString());
+        THROW_CODE(InputError, "Invalid input: " + component.constant.scalar.AsString());
     switch (it->second) {
     case 0:
         return cypher::FieldData(::lgraph::FieldData(ymdhmsf.year));
@@ -805,7 +816,7 @@ cypher::FieldData BuiltinFunction::DateTimeComponent(RTContext *ctx, const Recor
     case 6:
         return cypher::FieldData(::lgraph::FieldData(static_cast<int64_t>(ymdhmsf.fraction)));
     default:
-        throw ::lgraph::InternalError("");
+        THROW_CODE(InternalError);
     }
 }
 
@@ -853,6 +864,82 @@ cypher::FieldData BuiltinFunction::SubString(RTContext *ctx, const Record &recor
                                   + arg1.ToString());
 }
 
+cypher::FieldData BuiltinFunction::Mask(RTContext *ctx, const Record &record,
+                                        const std::vector<ArithExprNode> &args) {
+    /* Arguments:
+     * start    An expression that returns an integer value.
+     * end   An expression that returns an integer value.
+     * mask_char An expression that returns a char value.
+     */
+    if (args.size() != 4 && args.size() != 5) CYPHER_ARGUMENT_ERROR();
+    auto extractChineseCharacters = [](const std::string& text) {
+        auto isUtf8StartByte = [](unsigned char c) {
+            return (c & 0xC0) != 0x80;
+        };
+        std::vector<std::string> characters;
+        std::string currentChar;
+        for (unsigned char c : text) {
+            if (isUtf8StartByte(c)) {
+                if (!currentChar.empty()) {
+                    characters.push_back(currentChar);
+                    currentChar.clear();
+                }
+            }
+            currentChar += c;
+        }
+        if (!currentChar.empty()) {
+            characters.push_back(currentChar);
+        }
+        return characters;
+    };
+    auto arg1 = args[1].Evaluate(ctx, record);
+    switch (arg1.type) {
+        case Entry::CONSTANT:
+            if (arg1.constant.IsString()) {
+                auto arg2 = args[2].Evaluate(ctx, record);
+                auto arg3 = args[3].Evaluate(ctx, record);
+                if (!arg2.IsInteger())
+                    throw lgraph::CypherException("Argument 2 of `MASK()` expects int type: "
+                                                  + arg2.ToString());
+                if (!arg3.IsInteger())
+                    throw lgraph::CypherException("Argument 3 of `MASK()` expects int type: "
+                                                  + arg3.ToString());
+
+                std::string ss = "*";
+                if (args.size() == 5) {
+                    auto arg4 = args[4].Evaluate(ctx, record);
+                    ss = arg4.constant.ToString("");
+                }
+                auto origin = arg1.constant.ToString("");
+                auto origin_strings = extractChineseCharacters(origin);
+                auto size = static_cast<int64_t>(origin_strings.size());
+                auto start = arg2.constant.scalar.integer();
+                auto end = arg3.constant.scalar.integer();
+                if (start < 1 || start > size)
+                    throw lgraph::CypherException("Invalid argument 2 of `MASK()`: "
+                                                  + arg2.ToString());
+                if (end < start || end > size)
+                    throw lgraph::CypherException("Invalid argument 3 of `MASK()`: "
+                                                  + arg3.ToString());
+
+                std::string result;
+                for (int i = 0; i < start - 1; ++i)
+                    result.append(origin_strings[i]);
+                for (int i = start; i <= end; i++)
+                    result.append(ss);
+                for (int i = end; i < size; ++i)
+                    result.append(origin_strings[i]);
+                return cypher::FieldData(lgraph::FieldData(result));
+            }
+            break;
+    default:
+            break;
+    }
+
+    throw lgraph::CypherException("Function `MASK()` is not supported for: "
+                                  + arg1.ToString());
+}
+
 cypher::FieldData BuiltinFunction::Concat(RTContext *ctx, const Record &record,
                                              const std::vector<ArithExprNode> &args) {
     /* Arguments:
@@ -870,7 +957,7 @@ cypher::FieldData BuiltinFunction::Concat(RTContext *ctx, const Record &record,
                     auto arg = args[i].Evaluate(ctx, record);
                     if (!arg.IsString())
                         throw lgraph::CypherException("Argument " + std::to_string(i)
-                                                      + " of `SUBSTRING()` expects string type: "
+                                                      + " of `CONCAT()` expects string type: "
                                                       + arg.ToString());
 
                     result.append(arg.constant.ToString(""));
@@ -884,6 +971,459 @@ cypher::FieldData BuiltinFunction::Concat(RTContext *ctx, const Record &record,
     }
 
     throw lgraph::CypherException("Function `CONCAT()` is not supported for: " + arg1.ToString());
+}
+
+cypher::FieldData BuiltinFunction::Point(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() == 1 || args.size() > 4) CYPHER_ARGUMENT_ERROR();
+    CYPHER_THROW_ASSERT(args.size() >= 2);
+    // Point(string) Returns a Point by parsing a string.
+    auto arg1 = args[1].Evaluate(ctx, record);
+    if (args.size() == 2) {
+        if (!arg1.IsString()) CYPHER_ARGUMENT_ERROR();
+        auto pt = ::lgraph::FieldData::Point(arg1.constant.scalar.AsString());
+        return cypher::FieldData(pt);
+    }
+    auto arg2 = args[2].Evaluate(ctx, record);
+    lgraph_api::SRID s;
+    double arg1_, arg2_;
+    if (arg1.IsInteger())
+        arg1_ = static_cast<double>(arg1.constant.scalar.AsInt64());
+    else if (arg1.IsReal())
+        arg1_ = arg1.constant.scalar.AsDouble();
+    else
+        CYPHER_ARGUMENT_ERROR();
+
+    if (arg2.IsInteger())
+        arg2_ = static_cast<double>(arg2.constant.scalar.AsInt64());
+    else if (arg2.IsReal())
+        arg2_ = arg2.constant.scalar.AsDouble();
+    else
+        CYPHER_ARGUMENT_ERROR();
+
+    // return point(2.32, 4.96)  srid = 4326 by default;
+    if (args.size() == 3) {
+        s = lgraph_api::SRID::WGS84;
+        auto pt = ::lgraph::FieldData::Point(lgraph_api::Point<lgraph_api::Wgs84>
+                (arg1_, arg2_, s));
+        return cypher::FieldData(pt);
+    }
+
+    // return point(arg1, arg2, 7203);
+    auto arg3 = args[3].Evaluate(ctx, record);
+    if (!arg3.IsInteger())
+        CYPHER_ARGUMENT_ERROR();
+
+    switch (arg3.constant.scalar.AsInt64()) {
+        case 4326:
+            s = lgraph_api::SRID::WGS84;
+            return cypher::FieldData(::lgraph::FieldData::Point
+            (lgraph_api::Point<lgraph_api::Wgs84>(arg1_, arg2_, s)));
+        case 7203:
+            s = lgraph_api::SRID::CARTESIAN;
+            return cypher::FieldData(::lgraph::FieldData::Point
+            (lgraph_api::Point<lgraph_api::Cartesian>(arg1_, arg2_, s)));
+        default:
+            CYPHER_ARGUMENT_ERROR();
+    }
+}
+
+cypher::FieldData BuiltinFunction::PointWKB(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() > 3) CYPHER_ARGUMENT_ERROR();
+    CYPHER_THROW_ASSERT(args.size() <= 3);
+    auto wkb = args[1].Evaluate(ctx, record);
+    if (!wkb.IsString()) CYPHER_ARGUMENT_ERROR();
+
+    lgraph_api::SRID s = lgraph_api::SRID::WGS84;
+    lgraph_api::SpatialType t = lgraph_api::SpatialType::POINT;
+    std::string wkb_ =  wkb.constant.scalar.AsString();
+    if (args.size() == 2) {
+        auto pt = ::lgraph::FieldData::Point(lgraph_api::Point<lgraph_api::Wgs84>
+                (s, t, 0, wkb_));
+        return cypher::FieldData(pt);
+    }
+
+    auto srid = args[2].Evaluate(ctx, record);
+    if (!srid.IsInteger()) CYPHER_ARGUMENT_ERROR();
+    switch (srid.constant.scalar.AsInt64()) {
+        case 4326:
+            return cypher::FieldData(::lgraph::FieldData::Point(
+                lgraph_api::Point<lgraph_api::Wgs84>(s, t, 0, wkb_)));
+        case 7203:
+            s = lgraph_api::SRID::CARTESIAN;
+            return cypher::FieldData(::lgraph::FieldData::Point(
+                lgraph_api::Point<lgraph_api::Cartesian>(s, t, 0, wkb_)));
+        default:
+            CYPHER_ARGUMENT_ERROR();
+    }
+}
+
+cypher::FieldData BuiltinFunction::PointWKT(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() > 3) CYPHER_ARGUMENT_ERROR();
+    CYPHER_THROW_ASSERT(args.size() <= 3);
+    auto wkt = args[1].Evaluate(ctx, record);
+    if (!wkt.IsString()) CYPHER_ARGUMENT_ERROR();
+
+    lgraph_api::SRID s = lgraph_api::SRID::WGS84;
+    lgraph_api::SpatialType t = lgraph_api::SpatialType::POINT;
+    std::string wkt_ = wkt.constant.scalar.AsString();
+    if (args.size() == 2) {
+        auto pt = ::lgraph::FieldData::Point(lgraph_api::Point<lgraph_api::Wgs84>
+                (s, t, 1, wkt_));
+        return cypher::FieldData(pt);
+    }
+
+    auto srid = args[2].Evaluate(ctx, record);
+    if (!srid.IsInteger()) CYPHER_ARGUMENT_ERROR();
+    switch (srid.constant.scalar.AsInt64()) {
+        case 4326:
+            return cypher::FieldData(::lgraph::FieldData::Point(
+                lgraph_api::Point<lgraph_api::Wgs84>(s, t, 1, wkt_)));
+        case 7203:
+            s = lgraph_api::SRID::CARTESIAN;
+            return cypher::FieldData(::lgraph::FieldData::Point(
+                lgraph_api::Point<lgraph_api::Cartesian>(s, t, 1, wkt_)));
+        default:
+            CYPHER_ARGUMENT_ERROR();
+    }
+}
+
+cypher::FieldData BuiltinFunction::LineString(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() != 2) CYPHER_ARGUMENT_ERROR();
+    CYPHER_THROW_ASSERT(args.size() == 2);
+    // LineString(string) Returns a LineString by parsing a string.
+    auto r = args[1].Evaluate(ctx, record);
+    if (!r.IsString()) CYPHER_ARGUMENT_ERROR();
+    auto l = ::lgraph::FieldData::LineString(r.constant.scalar.AsString());
+    return cypher::FieldData(l);
+}
+
+cypher::FieldData BuiltinFunction::LineStringWKB(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() > 3) CYPHER_ARGUMENT_ERROR();
+    CYPHER_THROW_ASSERT(args.size() <= 3);
+    auto wkb = args[1].Evaluate(ctx, record);
+    if (!wkb.IsString()) CYPHER_ARGUMENT_ERROR();
+
+    lgraph_api::SRID s = lgraph_api::SRID::WGS84;
+    lgraph_api::SpatialType t = lgraph_api::SpatialType::LINESTRING;
+    std::string wkb_ = wkb.constant.scalar.AsString();
+    if (args.size() == 2) {
+        auto pt = ::lgraph::FieldData::LineString(lgraph_api::LineString<lgraph_api::Wgs84>
+                (s, t, 0, wkb_));
+        return cypher::FieldData(pt);
+    }
+
+    auto srid = args[2].Evaluate(ctx, record);
+    if (!srid.IsInteger()) CYPHER_ARGUMENT_ERROR();
+    switch (srid.constant.scalar.AsInt64()) {
+        case 4326:
+            return cypher::FieldData(::lgraph::FieldData::LineString(
+                lgraph_api::LineString<lgraph_api::Wgs84>
+                (s, t, 0, wkb_)));
+        case 7203:
+            s = lgraph_api::SRID::CARTESIAN;
+            return cypher::FieldData(::lgraph::FieldData::LineString(
+                lgraph_api::LineString<lgraph_api::Cartesian>
+                (s, t, 0, wkb_)));
+        default:
+            CYPHER_ARGUMENT_ERROR();
+    }
+}
+
+cypher::FieldData BuiltinFunction::LineStringWKT(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() > 3) CYPHER_ARGUMENT_ERROR();
+    CYPHER_THROW_ASSERT(args.size() <= 3);
+    auto wkt = args[1].Evaluate(ctx, record);
+    if (!wkt.IsString()) CYPHER_ARGUMENT_ERROR();
+
+    lgraph_api::SRID s = lgraph_api::SRID::WGS84;
+    lgraph_api::SpatialType t = lgraph_api::SpatialType::LINESTRING;
+    std::string wkt_ = wkt.constant.scalar.AsString();
+    if (args.size() == 2) {
+        auto pt = ::lgraph::FieldData::LineString(lgraph_api::LineString<lgraph_api::Wgs84>
+                (s, t, 1, wkt_));
+        return cypher::FieldData(pt);
+    }
+
+    auto srid = args[2].Evaluate(ctx, record);
+    if (!srid.IsInteger()) CYPHER_ARGUMENT_ERROR();
+    switch (srid.constant.scalar.AsInt64()) {
+        case 4326:
+            return cypher::FieldData(::lgraph::FieldData::LineString(
+                lgraph_api::LineString<lgraph_api::Wgs84>
+                (s, t, 1, wkt_)));
+        case 7203:
+            s = lgraph_api::SRID::CARTESIAN;
+            return cypher::FieldData(::lgraph::FieldData::LineString(
+                lgraph_api::LineString<lgraph_api::Cartesian>
+                (s, t, 1, wkt_)));
+        default:
+            CYPHER_ARGUMENT_ERROR();
+    }
+}
+
+cypher::FieldData BuiltinFunction::Polygon(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() != 2) CYPHER_ARGUMENT_ERROR();
+    CYPHER_THROW_ASSERT(args.size() == 2);
+    // Polygon(string) Returns a Point by parsing a string.
+    auto r = args[1].Evaluate(ctx, record);
+    if (!r.IsString()) CYPHER_ARGUMENT_ERROR();
+    auto pl = ::lgraph::FieldData::Polygon(r.constant.scalar.AsString());
+    return cypher::FieldData(pl);
+}
+
+cypher::FieldData BuiltinFunction::PolygonWKB(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() > 3) CYPHER_ARGUMENT_ERROR();
+    CYPHER_THROW_ASSERT(args.size() <= 3);
+    auto wkb = args[1].Evaluate(ctx, record);
+    if (!wkb.IsString()) CYPHER_ARGUMENT_ERROR();
+
+    lgraph_api::SRID s = lgraph_api::SRID::WGS84;
+    lgraph_api::SpatialType t = lgraph_api::SpatialType::POLYGON;
+    std::string wkb_ = wkb.constant.scalar.AsString();
+    if (args.size() == 2) {
+        auto pt = ::lgraph::FieldData::Polygon(lgraph_api::Polygon<lgraph_api::Wgs84>
+                (s, t, 0, wkb_));
+        return cypher::FieldData(pt);
+    }
+
+    auto srid = args[2].Evaluate(ctx, record);
+    if (!srid.IsInteger()) CYPHER_ARGUMENT_ERROR();
+    switch (srid.constant.scalar.AsInt64()) {
+        case 4326:
+            return cypher::FieldData(::lgraph::FieldData::Polygon(
+                lgraph_api::Polygon<lgraph_api::Wgs84>
+                (s, t, 0, wkb_)));
+        case 7203:
+            s = lgraph_api::SRID::CARTESIAN;
+            return cypher::FieldData(::lgraph::FieldData::Polygon(
+                lgraph_api::Polygon<lgraph_api::Cartesian>
+                (s, t, 0, wkb_)));
+        default:
+            CYPHER_ARGUMENT_ERROR();
+    }
+}
+
+cypher::FieldData BuiltinFunction::PolygonWKT(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() > 3) CYPHER_ARGUMENT_ERROR();
+    CYPHER_THROW_ASSERT(args.size() <= 3);
+    auto wkt = args[1].Evaluate(ctx, record);
+    if (!wkt.IsString()) CYPHER_ARGUMENT_ERROR();
+
+    lgraph_api::SRID s = lgraph_api::SRID::WGS84;
+    lgraph_api::SpatialType t = lgraph_api::SpatialType::LINESTRING;
+    std::string wkt_ = wkt.constant.scalar.AsString();
+    if (args.size() == 2) {
+        auto pt = ::lgraph::FieldData::Polygon(lgraph_api::Polygon<lgraph_api::Wgs84>
+                (s, t, 1, wkt_));
+        return cypher::FieldData(pt);
+    }
+
+    auto srid = args[2].Evaluate(ctx, record);
+    if (!srid.IsInteger()) CYPHER_ARGUMENT_ERROR();
+    switch (srid.constant.scalar.AsInt64()) {
+        case 4326:
+            return cypher::FieldData(::lgraph::FieldData::Polygon(
+                lgraph_api::Polygon<lgraph_api::Wgs84>
+                (s, t, 1, wkt_)));
+        case 7203:
+            s = lgraph_api::SRID::CARTESIAN;
+            return cypher::FieldData(::lgraph::FieldData::Polygon(
+                lgraph_api::Polygon<lgraph_api::Cartesian>
+                (s, t, 1, wkt_)));
+        default:
+            CYPHER_ARGUMENT_ERROR();
+    }
+}
+
+cypher::FieldData BuiltinFunction::StartsWith(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() != 3) CYPHER_ARGUMENT_ERROR();
+    auto prefix = args[1].Evaluate(ctx, record);
+    std::string prefix_str = prefix.constant.scalar.AsString();
+    auto variable = args[2].Evaluate(ctx, record);
+    std::string variable_str = variable.constant.scalar.AsString();
+    bool ret = variable_str.compare(0, prefix_str.size(), prefix_str) == 0;
+    return cypher::FieldData(lgraph_api::FieldData(ret));
+}
+
+cypher::FieldData BuiltinFunction::EndsWith(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() != 3) CYPHER_ARGUMENT_ERROR();
+    auto postfix = args[1].Evaluate(ctx, record);
+    std::string postfix_str = postfix.constant.scalar.AsString();
+    auto variable = args[2].Evaluate(ctx, record);
+    std::string variable_str = variable.constant.scalar.AsString();
+    bool ret = variable_str.size() >= postfix_str.size() &&
+               variable_str.compare(variable_str.size() - postfix_str.size(),
+               postfix_str.size(), postfix_str) == 0;
+    return cypher::FieldData(lgraph_api::FieldData(ret));
+}
+
+cypher::FieldData BuiltinFunction::Contains(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() != 3) CYPHER_ARGUMENT_ERROR();
+    auto substr = args[1].Evaluate(ctx, record);
+    std::string substr_str = substr.constant.scalar.AsString();
+    auto variable = args[2].Evaluate(ctx, record);
+    std::string variable_str = variable.constant.scalar.AsString();
+    bool ret = variable_str.find(substr_str) != std::string::npos;
+    return cypher::FieldData(lgraph_api::FieldData(ret));
+}
+
+cypher::FieldData BuiltinFunction::Regexp(RTContext *ctx, const Record &record,
+                                            const std::vector<ArithExprNode> &args) {
+    if (args.size() != 3) CYPHER_ARGUMENT_ERROR();
+    auto regexp = args[1].Evaluate(ctx, record);
+    std::string regexp_str = regexp.constant.scalar.AsString();
+    auto variable = args[2].Evaluate(ctx, record);
+    std::string variable_str = variable.constant.scalar.AsString();
+    if (variable_str.empty()) return cypher::FieldData(lgraph_api::FieldData(false));
+    bool ret = std::regex_match(variable_str, std::regex(regexp_str));
+    return cypher::FieldData(lgraph_api::FieldData(ret));
+}
+
+cypher::FieldData BuiltinFunction::Exists(RTContext *ctx, const Record &record,
+                                          const std::vector<ArithExprNode> &args) {
+    auto res = args[1].Evaluate(ctx, record);
+    return cypher::FieldData(lgraph_api::FieldData(!res.IsNull()));
+}
+
+cypher::FieldData BuiltinFunction::ToLower(RTContext *ctx, const Record &record,
+                                          const std::vector<ArithExprNode> &args) {
+    if (args.size() != 2) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    std::transform(arg1.begin(), arg1.end(), arg1.begin(), [](unsigned char c) {
+        return std::tolower(c);
+    });
+    return cypher::FieldData(lgraph_api::FieldData(arg1));
+}
+
+cypher::FieldData BuiltinFunction::ToUpper(RTContext *ctx, const Record &record,
+                                           const std::vector<ArithExprNode> &args) {
+    if (args.size() != 2) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    std::transform(arg1.begin(), arg1.end(), arg1.begin(), [](unsigned char c) {
+        return std::toupper(c);
+    });
+    return cypher::FieldData(lgraph_api::FieldData(arg1));
+}
+
+static std::string ltrim(const std::string& s) {
+    auto it = std::find_if(s.begin(), s.end(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    });
+    return {it, s.end()};
+}
+
+static std::string rtrim(const std::string& s) {
+    auto it = std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    });
+    return {s.begin(), it.base()};
+}
+
+static std::string trim(const std::string& s) {
+    return ltrim(rtrim(s));
+}
+
+cypher::FieldData BuiltinFunction::Trim(RTContext *ctx, const Record &record,
+                                        const std::vector<ArithExprNode> &args) {
+    if (args.size() != 2) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    return cypher::FieldData(lgraph_api::FieldData(trim(arg1)));
+}
+
+cypher::FieldData BuiltinFunction::Ltrim(RTContext *ctx, const Record &record,
+                                        const std::vector<ArithExprNode> &args) {
+    if (args.size() != 2) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    return cypher::FieldData(lgraph_api::FieldData(ltrim(arg1)));
+}
+
+cypher::FieldData BuiltinFunction::Rtrim(RTContext *ctx, const Record &record,
+                                         const std::vector<ArithExprNode> &args) {
+    if (args.size() != 2) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    return cypher::FieldData(lgraph_api::FieldData(rtrim(arg1)));
+}
+
+cypher::FieldData BuiltinFunction::Replace(RTContext *ctx, const Record &record,
+                                         const std::vector<ArithExprNode> &args) {
+    if (args.size() != 4) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    auto arg2_entry = args[2].Evaluate(ctx, record);
+    std::string arg2 = arg2_entry.constant.scalar.AsString();
+    auto arg3_entry = args[3].Evaluate(ctx, record);
+    std::string arg3 = arg3_entry.constant.scalar.AsString();
+    size_t pos = 0;
+    while ((pos = arg1.find(arg2, pos)) != std::string::npos) {
+        arg1.replace(pos, arg2.length(), arg3);
+        pos += arg3.length();
+    }
+    return cypher::FieldData(lgraph_api::FieldData(arg1));
+}
+
+cypher::FieldData BuiltinFunction::Split(RTContext *ctx, const Record &record,
+                                         const std::vector<ArithExprNode> &args) {
+    if (args.size() != 3) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    auto arg2_entry = args[2].Evaluate(ctx, record);
+    std::string arg2 = arg2_entry.constant.scalar.AsString();
+    std::vector<std::string> split_result;
+    boost::algorithm::split(split_result, arg1, boost::is_any_of(arg2));
+    std::vector<::lgraph::FieldData> res;
+    for (auto& item : split_result) {
+        res.emplace_back(std::move(item));
+    }
+    return cypher::FieldData(std::move(res));
+}
+
+cypher::FieldData BuiltinFunction::Left(RTContext *ctx, const Record &record,
+                                        const std::vector<ArithExprNode> &args) {
+    if (args.size() != 3) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    auto arg2_entry = args[2].Evaluate(ctx, record);
+    int64_t arg2 = arg2_entry.constant.scalar.AsInt64();
+    if (arg2 < 0) THROW_CODE(InvalidParameter);
+    return cypher::FieldData(arg1.substr(0, std::min((size_t)arg2, arg1.size())));
+}
+
+cypher::FieldData BuiltinFunction::Right(RTContext *ctx, const Record &record,
+                                         const std::vector<ArithExprNode> &args) {
+    if (args.size() != 3) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    auto arg2_entry = args[2].Evaluate(ctx, record);
+    int64_t arg2 = arg2_entry.constant.scalar.AsInt64();
+    if (arg2 < 0) THROW_CODE(InvalidParameter);
+    size_t len = std::min((size_t)arg2, arg1.size());
+    return cypher::FieldData(arg1.substr(arg1.size() - len, len));
+}
+
+cypher::FieldData BuiltinFunction::Reverse(RTContext *ctx, const Record &record,
+                                           const std::vector<ArithExprNode> &args) {
+    if (args.size() != 2) CYPHER_ARGUMENT_ERROR();
+    auto arg1_entry = args[1].Evaluate(ctx, record);
+    std::string arg1 = arg1_entry.constant.scalar.AsString();
+    std::reverse(arg1.begin(), arg1.end());
+    return cypher::FieldData(lgraph_api::FieldData(arg1));
 }
 
 cypher::FieldData BuiltinFunction::Bin(RTContext *ctx, const Record &record,
@@ -950,8 +1490,13 @@ cypher::FieldData BuiltinFunction::_ToList(RTContext *ctx, const Record &record,
     auto ret = cypher::FieldData::Array(0);
     for (auto &arg : args) {
         auto r = arg.Evaluate(ctx, record);
-        CYPHER_THROW_ASSERT(r.IsScalar());
-        ret.array->emplace_back(r.constant.scalar);
+        if (r.IsScalar()) {
+            ret.array->emplace_back(r.constant.scalar);
+        } else if (r.IsArray()) {
+            ret.array->emplace_back(*r.constant.array);
+        } else if (r.IsMap()) {
+            ret.array->emplace_back(*r.constant.map);
+        }
     }
     return ret;
 }
@@ -994,7 +1539,11 @@ void ArithOperandNode::SetEntity(const std::string &alias, const SymbolTable &sy
     type = AR_OPERAND_VARIADIC;
     variadic.alias = alias;
     auto it = sym_tab.symbols.find(alias);
-    CYPHER_THROW_ASSERT(it != sym_tab.symbols.end());
+    if (it == sym_tab.symbols.end()) {
+        THROW_CODE(InputError,
+            "Variable `{}` not defined", alias);
+    }
+    // CYPHER_THROW_ASSERT(it != sym_tab.symbols.end());
     variadic.alias_idx = it->second.id;
 }
 
@@ -1019,6 +1568,21 @@ void ArithOperandNode::RealignAliasId(const SymbolTable &sym_tab) {
     auto it = sym_tab.symbols.find(variadic.alias);
     CYPHER_THROW_ASSERT(it != sym_tab.symbols.end());
     variadic.alias_idx = it->second.id;
+}
+
+cypher::FieldData GenerateCypherFieldData(const parser::Expression &expr) {
+    if (expr.type != parser::Expression::LIST && expr.type != parser::Expression::MAP) {
+        return cypher::FieldData(parser::MakeFieldData(expr));
+    }
+    if (expr.type == parser::Expression::LIST) {
+        std::vector<cypher::FieldData> list;
+        for (auto &e : expr.List()) list.emplace_back(GenerateCypherFieldData(e));
+        return cypher::FieldData(std::move(list));
+    } else {
+        std::unordered_map<std::string, cypher::FieldData> map;
+        for (auto &e : expr.Map()) map.emplace(e.first, GenerateCypherFieldData(e.second));
+        return cypher::FieldData(std::move(map));
+    }
 }
 
 void ArithOperandNode::Set(const parser::Expression &expr, const SymbolTable &sym_tab) {
@@ -1059,9 +1623,13 @@ void ArithOperandNode::Set(const parser::Expression &expr, const SymbolTable &sy
         {
             /* e.g. [1,3,5,7], [1,3,5.55,'seven'] */
             type = ArithOperandNode::AR_OPERAND_CONSTANT;
-            std::vector<lgraph::FieldData> list;
-            for (auto &e : expr.List()) list.emplace_back(parser::MakeFieldData(e));
-            constant = cypher::FieldData(std::move(list));
+            constant = GenerateCypherFieldData(expr);
+            break;
+        }
+    case parser::Expression::MAP:
+        {
+            type = ArithOperandNode::AR_OPERAND_CONSTANT;
+            constant = GenerateCypherFieldData(expr);
             break;
         }
     default:
@@ -1070,7 +1638,8 @@ void ArithOperandNode::Set(const parser::Expression &expr, const SymbolTable &sy
 }
 
 ArithExprNode::ArithExprNode(const parser::Expression &expr, const SymbolTable &sym_tab) {
-    Set(expr, sym_tab);
+    expression_ = expr;
+    Set(expression_, sym_tab);
 }
 
 void ArithExprNode::SetOperand(ArithOperandNode::ArithOperandType operand_type,
@@ -1206,10 +1775,13 @@ void ArithExprNode::Set(const parser::Expression &expr, const SymbolTable &sym_t
         {
             /* We treat:
              * [1, 2, 'three'] as operand
+             * [{a: "Christopher Nolan", b: "Dennis Quaid"}] as operand
              * [n.name, n.age] as op  */
             bool is_operand = true;
-            for (auto &e : expr.List())
+            for (auto &e : expr.List()) {
                 if (!e.IsLiteral()) is_operand = false;
+                if (e.type == parser::Expression::MAP) is_operand = true;
+            }
             if (!is_operand) {
                 type = AR_EXP_OP;
                 op.SetFunc(BuiltinFunction::INTL_TO_LIST);
@@ -1273,7 +1845,7 @@ Entry ArithOpNode::Evaluate(RTContext *ctx, const Record &record) const {
             /* if !func, custom function */
             std::string input, output;
             std::string name = func_name.substr(std::string(CUSTOM_FUNCTION_PREFIX).size());
-            // 将children都分别进行evaluate操作，并且添加到input进行输出
+            // evaluate every child and add to input for output
             for (int i = 1; i < (int)children.size(); i++) {
                 auto v = children[i].Evaluate(ctx, record);
                 input.append(v.ToString());
@@ -1284,7 +1856,7 @@ Entry ArithOpNode::Evaluate(RTContext *ctx, const Record &record) const {
                 ac_db.CallPlugin(ctx->txn_.get(), lgraph::plugin::Type::CPP,
                                  "A_DUMMY_TOKEN_FOR_CPP_PLUGIN", name, input, 0, false, output);
             if (!exists) {
-                throw lgraph::InputError(FMA_FMT("Plugin [{}] does not exist.", name));
+                THROW_CODE(InputError, "Plugin [{}] does not exist.", name);
             }
             return Entry(cypher::FieldData(lgraph::FieldData(output)));
         }

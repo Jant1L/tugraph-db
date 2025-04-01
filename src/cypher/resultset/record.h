@@ -17,7 +17,9 @@
 //
 #pragma once
 
+#include <utility>
 #include "core/data_type.h"  // lgraph::FieldData
+#include "cypher/cypher_types.h"
 #include "parser/data_typedef.h"
 #include "graph/node.h"
 #include "graph/relationship.h"
@@ -50,6 +52,10 @@ struct Entry {
     explicit Entry(const cypher::FieldData &v) : constant(v), type(CONSTANT) {}
 
     explicit Entry(cypher::FieldData &&v) : constant(std::move(v)), type(CONSTANT) {}
+
+    explicit Entry(const lgraph::FieldData &v) : constant(v), type(CONSTANT) {}
+
+    explicit Entry(lgraph::FieldData &&v) : constant(std::move(v)), type(CONSTANT) {}
 
     explicit Entry(Node *v) : node(v), type(NODE) {}
 
@@ -86,7 +92,11 @@ struct Entry {
 
     bool IsArray() const { return type == CONSTANT && constant.type == cypher::FieldData::ARRAY; }
 
+    bool IsMap() const { return type == CONSTANT && constant.type == cypher::FieldData::MAP; }
+
     bool IsScalar() const { return type == CONSTANT && constant.type == cypher::FieldData::SCALAR; }
+
+    bool IsConstant() const { return IsNull() || IsScalar() || IsArray() || IsMap(); }
 
     bool IsBool() const { return type == CONSTANT && constant.IsBool(); }
 
@@ -98,6 +108,14 @@ struct Entry {
 
     bool IsNode() const { return type == NODE && node; }
 
+    bool IsPoint() const { return type == CONSTANT && constant.IsPoint(); }
+
+    bool IsLineString() const { return type == CONSTANT && constant.IsLineString(); }
+
+    bool IsPolygon() const { return type == CONSTANT && constant.IsPolygon(); }
+
+    bool IsSpatial() const { return type == CONSTANT && constant.IsSpatial(); }
+
     bool IsRelationship() const { return type == RELATIONSHIP && relationship; }
 
     bool operator==(const Entry &rhs) const {
@@ -108,11 +126,13 @@ struct Entry {
             return (type == rhs.type && constant == rhs.constant) ||
                    (EqualNull() && rhs.EqualNull());
         case NODE:
-            // TODO(anyone) should be this.vid = rhs.vid?
-            return (type == rhs.type && node == rhs.node) || (EqualNull() && rhs.EqualNull());
+            return (EqualNull() && rhs.EqualNull()) ||
+                   (type == rhs.type && node && rhs.node && node->PullVid() == rhs.node->PullVid());
         case RELATIONSHIP:
-            return (type == rhs.type && relationship == rhs.relationship) ||
-                   (EqualNull() && rhs.EqualNull());
+            return (EqualNull() && rhs.EqualNull()) ||
+                   (type == rhs.type && relationship && rhs.relationship && relationship->ItRef() &&
+                    rhs.relationship->ItRef() &&
+                    relationship->ItRef()->GetUid() == rhs.relationship->ItRef()->GetUid());
         case VAR_LEN_RELP:
         case NODE_SNAPSHOT:
         case RELP_SNAPSHOT:
@@ -144,6 +164,8 @@ struct Entry {
 
     /* Get field value of node or relationship. */
     lgraph::FieldData GetEntityField(RTContext *ctx, const std::string &fd) const;
+
+    bool CheckEntityEfficient(RTContext *ctx) const;
 
     static std::string ToString(const RecordEntryType &type) {
         switch (type) {
@@ -235,7 +257,11 @@ struct Record {
 
     explicit Record(size_t size) { values.resize(size); }
 
-    Record(size_t size, const SymbolTable *sym_tab) : symbol_table(sym_tab) { values.resize(size); }
+    Record(size_t size, const SymbolTable *sym_tab, const PARAM_TAB &ptab)
+        : symbol_table(sym_tab) {
+        values.resize(size);
+        SetParameter(ptab);
+    }
 
     Record(const Record &rhs) {
         values = rhs.values;

@@ -97,11 +97,14 @@ static const char* const PYTHON_PLUGIN_TABLE = "_python_plugin_";  // plugin_nam
 static const char* const CPP_PLUGIN_DIR = "_cpp_plugin_";
 static const char* const PYTHON_PLUGIN_DIR = "_python_plugin_";
 static const char* const FULLTEXT_INDEX_DIR = "_fulltext_index_";
-static const char* const NAME_SEPERATOR = "_@lgraph@_";
+static const char* const NAME_SEPARATOR = "_@lgraph@_";
+static const char* const COMPOSITE_INDEX_KEY_SEPARATOR = "_";
 static const char* const VERTEX_FULLTEXT_INDEX = "vertex_fulltext";
 static const char* const EDGE_FULLTEXT_INDEX = "edge_fulltext";
 static const char* const VERTEX_INDEX = "vertex_index";
+static const char* const COMPOSITE_INDEX = "composite_index";
 static const char* const EDGE_INDEX = "edge_index";
+static const char* const VERTEX_VECTOR_INDEX = "vertex_vector_index";
 static const char* const USER_TABLE_NAME = "_user_table_";
 static const char* const ROLE_TABLE_NAME = "_role_table_";
 static const char* const GRAPH_CONFIG_TABLE_NAME = "_graph_config_table_";
@@ -142,7 +145,7 @@ static const size_t MAX_NUM_FIELDS = 1024;  // max number of fields in vertex/ed
 static const size_t MAX_NUM_LABELS = 4096;  // max number of vertex and edge labels in one graph
 
 static const size_t MAX_COMPILE_TIME_MS = 1000 * 1000;  // max compile time when loading plugin
-static const size_t MAX_UNZIP_TIME_MS = 100 * 1000;     // max unzip time when loading plugin
+static const size_t MAX_UNZIP_TIME_MS = 120 * 1000;     // max unzip time when loading plugin
 
 #ifdef _WIN32
 static const size_t DEFAULT_GRAPH_SIZE = (size_t)1 << 30;
@@ -158,6 +161,7 @@ static const size_t MAX_LABEL_NAME_LEN = 256;
 static const size_t MAX_FIELD_NAME_LEN = 256;
 static const size_t MAX_PASSWORD_LEN = 64;
 static const size_t MAX_DESC_LEN = 512;
+static const size_t MAX_COMPOSITE_FILED_SIZE = 16;
 
 static const size_t DEFAULT_MEM_LIMIT = (size_t)2 << 40;
 }  // namespace _detail
@@ -175,6 +179,7 @@ static const char* const PLUGIN_CODE_TYPE_CPP = "cpp";
 static const char* const PLUGIN_CODE_TYPE_SO = "so";
 static const char* const PLUGIN_CODE_TYPE_ZIP = "zip";
 static const char* const PLUGIN_CODE_TYPE_PY = "py";
+static const char* const PLUGIN_CODE_DELIMITER = "\n---PLUGIN---FILE---BOUNDARY---\n";
 
 typedef ::lgraph_api::PluginCodeType CodeType;
 }  // namespace plugin

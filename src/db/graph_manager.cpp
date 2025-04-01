@@ -12,6 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  */
 
+#include <memory>
 #include <random>
 
 #include "fma-common/binary_buffer.h"
@@ -133,8 +134,13 @@ bool lgraph::GraphManager::CreateGraphWithData(KvTransaction& txn, const std::st
         real_config.dir = GetGraphActualDir(parent_dir_, real_config.dir);
 
         std::unique_ptr<LightningGraph> graph(new LightningGraph(real_config));
+        graph->Close();
+        graph.reset();
         std::string new_file_path = GetGraphActualDir(real_config.dir, "data.mdb");
-        std::rename(data_file_path.c_str(), new_file_path.c_str());
+        std::error_code ec;
+        std::filesystem::copy_file(data_file_path, new_file_path,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) return false;
         graph = std::make_unique<LightningGraph>(real_config);
         graph->FlushDbSecret(secret);
         graphs_.emplace_hint(it, name, GcDb(graph.release()));
@@ -143,7 +149,11 @@ bool lgraph::GraphManager::CreateGraphWithData(KvTransaction& txn, const std::st
         real_config.dir = GetGraphActualDir(parent_dir_, origin_graph->GetSecret());
         std::string new_file_path = GetGraphActualDir(GetGraphActualDir(
                                     parent_dir_, origin_graph->GetSecret()), "data.mdb");
-        std::rename(data_file_path.c_str(), new_file_path.c_str());
+        origin_graph->Close();
+        std::error_code ec;
+        std::filesystem::copy_file(data_file_path, new_file_path,
+                                   std::filesystem::copy_options::overwrite_existing);
+        if (ec) return false;
         std::unique_ptr<LightningGraph> new_graph(new LightningGraph(real_config));
         new_graph->FlushDbSecret(origin_graph->GetSecret());
         graphs_[name] = GcDb(new_graph.release());
@@ -208,10 +218,10 @@ std::map<std::string, lgraph::DBConfig> lgraph::GraphManager::ListGraphs() const
 
 lgraph::ScopedRef<lgraph::LightningGraph> lgraph::GraphManager::GetGraphRef(
     const std::string& graph) const {
-    if (graph.empty()) throw InputError("Graph name cannot be empty.");
+    if (graph.empty()) THROW_CODE(InputError, "Graph name cannot be empty.");
     auto it = graphs_.find(graph);
     if (it == graphs_.end())
-        throw InputError(fma_common::StringFormatter::Format("No such graph: {}", graph));
+        THROW_CODE(InputError, "No such graph: {}", graph);
     return it->second.GetScopedRef();
 }
 

@@ -19,6 +19,7 @@
 #include "tools/lgraph_log.h"
 #include "bolt/record.h"
 #include "bolt/graph.h"
+#include "lgraph/lgraph_date_time.h"
 #pragma once
 
 namespace bolt {
@@ -26,7 +27,7 @@ namespace detail {
 nlohmann::json ToJsonObj(const bolt::Node& node);
 nlohmann::json ToJsonObj(const bolt::Relationship& rel);
 nlohmann::json ToJsonObj(const bolt::Path& path);
-nlohmann::json ToJsonObj(const std::any& item) {
+inline nlohmann::json ToJsonObj(const std::any& item) {
     if (!item.has_value()) {
         return nullptr;
     }
@@ -53,10 +54,13 @@ nlohmann::json ToJsonObj(const std::any& item) {
         return ToJsonObj(path);
     } else if (item.type() == typeid(bolt::Date)) {
         const auto& date = std::any_cast<const bolt::Date&>(item);
-        return ToJsonObj(date.days);
-    } else if (item.type() == typeid(bolt::LocalTime)) {
-        const auto& localTime = std::any_cast<const bolt::LocalTime&>(item);
-        return ToJsonObj(localTime.nanoseconds);
+        lgraph_api::Date d(date.days);
+        return ToJsonObj(d.ToString());
+    } else if (item.type() == typeid(bolt::LocalDateTime)) {
+        const auto& localDateTime = std::any_cast<const bolt::LocalDateTime&>(item);
+        lgraph_api::DateTime dateTime(
+            localDateTime.seconds * 1000000 + localDateTime.nanoseconds/1000);
+        return ToJsonObj(dateTime.ToString());
     } else if (item.type() == typeid(std::vector<std::any>)) {
         const auto& vector = std::any_cast<const std::vector<std::any>&>(item);
         nlohmann::json ret = nlohmann::json::array();
@@ -78,7 +82,7 @@ nlohmann::json ToJsonObj(const std::any& item) {
     }
 }
 
-nlohmann::json ToJsonObj(const bolt::Node& node) {
+inline nlohmann::json ToJsonObj(const bolt::Node& node) {
     std::string ret("(");
     for (auto& label : node.labels) {
         ret.append(":").append(label);
@@ -98,7 +102,7 @@ nlohmann::json ToJsonObj(const bolt::Node& node) {
     return ret;
 }
 
-nlohmann::json ToJsonObj(const bolt::Relationship& rel) {
+inline nlohmann::json ToJsonObj(const bolt::Relationship& rel) {
     std::string ret;
     ret.append("[:").append(rel.type).append(" {");
     int count = 0;
@@ -115,7 +119,7 @@ nlohmann::json ToJsonObj(const bolt::Relationship& rel) {
     return ret;
 }
 
-nlohmann::json ToJsonObj(const bolt::Path& path) {
+inline nlohmann::json ToJsonObj(const bolt::Path& path) {
     std::unordered_map<int64_t, size_t> nodes_index;
     for (size_t i = 0; i < path.nodes.size(); i++) {
         nodes_index[path.nodes[i].id] = i;
@@ -128,22 +132,25 @@ nlohmann::json ToJsonObj(const bolt::Path& path) {
         ret.append(forward ? "-" : "<-");
         ret.append(ToJsonObj(rel).get<std::string>());
         ret.append(forward ? "->" : "-");
-        ret.append(ToJsonObj(path.nodes[nodes_index.at(rel.endId)]).get<std::string>());
-        nodeId = rel.endId;
+        ret.append(ToJsonObj(path.nodes[nodes_index.at(
+                                 forward ? rel.endId : rel.startId)]).get<std::string>());
+        nodeId = forward ? rel.endId : rel.startId;
     }
     return ret;
 }
 }  // namespace detail
 
-std::string Print(const std::any& boltType) {
+inline std::string Print(const std::any& boltType) {
     auto j = detail::ToJsonObj(boltType);
-    if (boltType.type() == typeid(bolt::Node) ||
-        boltType.type() == typeid(bolt::Relationship) ||
-        boltType.type() == typeid(bolt::Path)) {
+    if (j.is_string()) {
         return j.get<std::string>();
     } else {
         return j.dump();
     }
+}
+
+inline nlohmann::json ToJson(const std::any& boltType) {
+    return detail::ToJsonObj(boltType);
 }
 
 }  // namespace bolt

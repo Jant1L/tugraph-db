@@ -24,7 +24,7 @@ using json = nlohmann::json;
 class MyConfig : public ConfigBase<Empty> {
  public:
     std::string name = std::string("mis");
-    int make_symmetric = 0;
+    int make_symmetric = 1;
     void AddParameter(fma_common::Configuration& config) {
         ConfigBase<Empty>::AddParameter(config);
         config.Add(make_symmetric, "make_symmetric", true)
@@ -40,7 +40,12 @@ class MyConfig : public ConfigBase<Empty> {
         fma_common::Configuration config;
         AddParameter(config);
         config.ExitAfterHelp(true);
-        config.ParseAndFinalize(argc, argv);
+        try {
+            config.ParseAndFinalize(argc, argv);
+        } catch (std::exception& e) {
+            std::cerr << e.what() << std::endl;
+            std::exit(-1);
+        }
         Print();
     }
 };
@@ -53,6 +58,9 @@ int main(int argc, char** argv) {
     start_time = get_time();
     OlapOnDisk<Empty> graph;
     MyConfig config(argc, argv);
+    if (!config.id_mapping) {
+        printf("id_mapping is false, the results may contain vertices that do not exist\n");
+    }
 
     if (config.make_symmetric == 0) {
         graph.Load(config, INPUT_SYMMETRIC);

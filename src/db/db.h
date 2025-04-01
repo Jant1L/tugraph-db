@@ -27,6 +27,7 @@ class AccessControlledDB {
     AutoReadLock graph_ref_lock_;
     AccessLevel access_level_;
     std::string user_;
+    static bool enable_plugin;
 
     DISABLE_COPY(AccessControlledDB);
 
@@ -50,8 +51,9 @@ class AccessControlledDB {
     Transaction ForkTxn(Transaction& txn);
 
     bool LoadPlugin(plugin::Type plugin_type, const std::string& token, const std::string& name,
-                    const std::string& code, plugin::CodeType code_type, const std::string& desc,
-                    bool is_read_only, const std::string& version);
+                    const std::vector<std::string>& code, const std::vector<std::string>& filename,
+                    plugin::CodeType code_type, const std::string& desc, bool is_read_only,
+                    const std::string& version);
 
     bool DelPlugin(plugin::Type plugin_type, const std::string& token, const std::string& name);
 
@@ -59,6 +61,10 @@ class AccessControlledDB {
                     plugin::Type plugin_type, const std::string& token, const std::string& name,
                     const std::string& request, double timeout_seconds, bool in_process,
                     std::string& output);
+
+    bool CallV2Plugin(lgraph_api::Transaction* txn, plugin::Type plugin_type,
+                      const std::string& user, const std::string& name, const std::string& request,
+                      double timeout_seconds, bool in_process, Result& output);
 
     std::vector<PluginDesc> ListPlugins(plugin::Type plugin_type, const std::string& token);
 
@@ -100,15 +106,30 @@ class AccessControlledDB {
 
     bool AddVertexIndex(const std::string& label, const std::string& field, IndexType type);
 
+    bool AddVertexCompositeIndex(const std::string& label,
+                                 const std::vector<std::string>& fields, CompositeIndexType type);
+
     bool AddEdgeIndex(const std::string& label, const std::string& field, IndexType type);
+
+    bool AddVectorIndex(bool is_vertex, const std::string& label, const std::string& field,
+                        const std::string& index_type, int vec_dimension,
+                        const std::string& distance_type, std::vector<int>& index_spec);
 
     bool DeleteVertexIndex(const std::string& label, const std::string& field);
 
     bool DeleteEdgeIndex(const std::string& label, const std::string& field);
 
+    bool DeleteVertexCompositeIndex(const std::string& label,
+                                    const std::vector<std::string>& fields);
+
+    bool DeleteVectorIndex(bool is_vertex, const std::string& label, const std::string& field);
+
     bool IsVertexIndexed(const std::string& label, const std::string& field);
 
     bool IsEdgeIndexed(const std::string& label, const std::string& field);
+
+    bool IsVertexCompositeIndexed(const std::string& label,
+                                  const std::vector<std::string>& fields);
 
     bool AddFullTextIndex(bool is_vertex, const std::string& label, const std::string& field);
 
@@ -133,21 +154,36 @@ class AccessControlledDB {
 
     inline LightningGraph* GetLightningGraph() const { return graph_; }
 
+    inline static void SetEnablePlugin(bool enable_plugin_) {
+        AccessControlledDB::enable_plugin = enable_plugin_;
+    }
+
+    inline static bool GetEnablePlugin() {
+        return enable_plugin;
+    }
+
  private:
     inline void CheckReadAccess() const {
-        if (access_level_ < AccessLevel::READ) throw AuthError("No read permission.");
+        if (access_level_ < AccessLevel::READ) THROW_CODE(Unauthorized, "No read permission.");
     }
 
     inline void CheckWriteAccess() const {
-        if (access_level_ < AccessLevel::WRITE) throw AuthError("No write permission.");
+        if (access_level_ < AccessLevel::WRITE) THROW_CODE(Unauthorized, "No write permission.");
     }
 
     inline void CheckFullAccess() const {
-        if (access_level_ < AccessLevel::FULL) throw AuthError("No full permission.");
+        if (access_level_ < AccessLevel::FULL) THROW_CODE(Unauthorized, "No full permission.");
     }
 
     inline void CheckAdmin() const {
-        if (user_ != _detail::DEFAULT_ADMIN_NAME) throw AuthError("Not the admin user.");
+        if (user_ != _detail::DEFAULT_ADMIN_NAME) THROW_CODE(Unauthorized, "Not the admin user.");
+    }
+
+    inline void CheckLoadOrDeletePlugin() const {
+        if (!enable_plugin) THROW_CODE(PluginDisabled, "No permission to load or delete plugin, "
+                                       "please use correct config and restart server!\n"
+                                       "This function has security risks, please enable "
+                                       "it with caution!");
     }
 };
 }  // namespace lgraph

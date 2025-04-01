@@ -44,6 +44,7 @@ add_library(${TARGET_SERVER_LIB} STATIC
         plugin/cpp_plugin.cpp
         server/bolt_handler.cpp
         server/bolt_server.cpp
+        server/bolt_raft_server.cpp
         server/lgraph_server.cpp
         server/state_machine.cpp
         server/ha_state_machine.cpp
@@ -59,11 +60,19 @@ add_library(${TARGET_SERVER_LIB} STATIC
         http/algo_task.cpp
         ${PROTO_SRCS})
 
-target_compile_options(${TARGET_SERVER_LIB} PUBLIC
+if (OURSYSTEM STREQUAL "centos9")
+        target_compile_options(${TARGET_SERVER_LIB} PUBLIC
+        -DGFLAGS_NS=${GFLAGS_NS}
+        -D__const__=__unused__
+        -pipe
+        -fPIC -fno-omit-frame-pointer)
+else()
+        target_compile_options(${TARGET_SERVER_LIB} PUBLIC
         -DGFLAGS_NS=${GFLAGS_NS}
         -D__const__=
         -pipe
         -fPIC -fno-omit-frame-pointer)
+endif()
 
 if (NOT (CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
     target_link_libraries(${TARGET_SERVER_LIB}
@@ -72,6 +81,9 @@ if (NOT (CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
             lgraph_cypher_lib
             geax_isogql
             bolt
+            vsag
+            /opt/OpenBLAS/lib/libopenblas.a
+            faiss
             # begin static linking
             -Wl,-Bstatic
             cpprest
@@ -129,6 +141,8 @@ add_executable(${TARGET_SERVER}
 
 target_link_libraries(${TARGET_SERVER}
         ${TARGET_SERVER_LIB}
-        librocksdb.a)
-
-
+        librocksdb.a
+        vsag
+        /opt/OpenBLAS/lib/libopenblas.a
+        faiss
+)

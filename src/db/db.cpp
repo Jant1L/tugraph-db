@@ -15,6 +15,8 @@
 #include "db/db.h"
 #include "lgraph/lgraph_txn.h"
 
+bool lgraph::AccessControlledDB::enable_plugin = true;
+
 lgraph::AccessControlledDB::AccessControlledDB(ScopedRef<LightningGraph>&& ref,
                                                AccessLevel access_level,
                                                const std::string& user)
@@ -58,17 +60,21 @@ lgraph::Transaction lgraph::AccessControlledDB::ForkTxn(Transaction& txn) {
 }
 
 bool lgraph::AccessControlledDB::LoadPlugin(plugin::Type plugin_type, const std::string& user,
-                                            const std::string& name, const std::string& code,
+                                            const std::string& name,
+                                            const std::vector<std::string>& code,
+                                            const std::vector<std::string>& filename,
                                             plugin::CodeType code_type, const std::string& desc,
                                             bool is_read_only, const std::string& version) {
     CheckAdmin();
-    return graph_->GetPluginManager()->LoadPluginFromCode(plugin_type, user, name, code, code_type,
-                                                          desc, is_read_only, version);
+    CheckLoadOrDeletePlugin();
+    return graph_->GetPluginManager()->LoadPluginFromCode(plugin_type, user, name, code, filename,
+                                                          code_type, desc, is_read_only, version);
 }
 
 bool lgraph::AccessControlledDB::DelPlugin(plugin::Type plugin_type, const std::string& user,
                                            const std::string& name) {
     CheckAdmin();
+    CheckLoadOrDeletePlugin();
     return graph_->GetPluginManager()->DelPlugin(plugin_type, user, name);
 }
 
@@ -80,7 +86,7 @@ bool lgraph::AccessControlledDB::CallPlugin(lgraph_api::Transaction* txn,
     auto pm = graph_->GetPluginManager();
     bool is_readonly = pm->IsReadOnlyPlugin(plugin_type, user, name);
     if (access_level_ < AccessLevel::WRITE && !is_readonly)
-        throw AuthError("Write permission needed to call this plugin.");
+        THROW_CODE(Unauthorized, "Write permission needed to call this plugin.");
     return pm->Call(txn,
                     plugin_type,
                     user,
@@ -90,6 +96,26 @@ bool lgraph::AccessControlledDB::CallPlugin(lgraph_api::Transaction* txn,
                     timeout_seconds,
                     in_process,
                     output);
+}
+
+bool lgraph::AccessControlledDB::CallV2Plugin(lgraph_api::Transaction* txn,
+                                              plugin::Type plugin_type, const std::string& user,
+                                              const std::string& name, const std::string& request,
+                                              double timeout_seconds, bool in_process,
+                                              Result& output) {
+    auto pm = graph_->GetPluginManager();
+    bool is_readonly = pm->IsReadOnlyPlugin(plugin_type, user, name);
+    if (access_level_ < AccessLevel::WRITE && !is_readonly)
+        THROW_CODE(Unauthorized, "Write permission needed to call this plugin.");
+    return pm->CallV2(txn,
+                      plugin_type,
+                      user,
+                      this,
+                      name,
+                      request,
+                      timeout_seconds,
+                      in_process,
+                      output);
 }
 
 std::vector<lgraph::PluginDesc> lgraph::AccessControlledDB::ListPlugins(plugin::Type plugin_type,
@@ -192,10 +218,27 @@ bool lgraph::AccessControlledDB::AddVertexIndex(const std::string& label, const 
     return graph_->BlockingAddIndex(label, field, type, true);
 }
 
+bool lgraph::AccessControlledDB::AddVertexCompositeIndex(const std::string& label,
+                                                         const std::vector<std::string>& fields,
+                                                         CompositeIndexType type) {
+    CheckFullAccess();
+    return graph_->BlockingAddCompositeIndex(label, fields, type, true);
+}
+
 bool lgraph::AccessControlledDB::AddEdgeIndex(const std::string& label, const std::string& field,
                                           IndexType type) {
     CheckFullAccess();
     return graph_->BlockingAddIndex(label, field, type, false);
+}
+
+bool lgraph::AccessControlledDB::AddVectorIndex(bool is_vertex, const std::string& label,
+                                                const std::string& field,
+                                                const std::string& index_type,
+                                                int vec_dimension, const std::string& distance_type,
+                                                std::vector<int>& index_spec) {
+    CheckFullAccess();
+    return graph_->BlockingAddVectorIndex(is_vertex, label, field, index_type, vec_dimension,
+                                            distance_type, index_spec);
 }
 
 bool lgraph::AccessControlledDB::AddFullTextIndex(bool is_vertex, const std::string& label,
@@ -247,6 +290,18 @@ bool lgraph::AccessControlledDB::DeleteEdgeIndex(const std::string& label,
     return graph_->DeleteIndex(label, field, false);
 }
 
+bool lgraph::AccessControlledDB::DeleteVertexCompositeIndex(const std::string& label,
+                                 const std::vector<std::string>& fields) {
+    CheckFullAccess();
+    return graph_->DeleteCompositeIndex(label, fields, true);
+}
+
+bool lgraph::AccessControlledDB::DeleteVectorIndex(bool is_vertex, const std::string& label,
+                                                   const std::string& field) {
+    CheckFullAccess();
+    return graph_->DeleteVectorIndex(is_vertex, label, field);
+}
+
 bool lgraph::AccessControlledDB::IsVertexIndexed(const std::string& label,
                                                  const std::string& field) {
     CheckReadAccess();
@@ -257,6 +312,12 @@ bool lgraph::AccessControlledDB::IsEdgeIndexed(const std::string& label,
                                                const std::string& field) {
     CheckReadAccess();
     return graph_->IsIndexed(label, field, false);
+}
+
+bool lgraph::AccessControlledDB::IsVertexCompositeIndexed(const std::string& label,
+                                 const std::vector<std::string>& fields) {
+    CheckReadAccess();
+    return graph_->IsCompositeIndexed(label, fields);
 }
 
 void lgraph::AccessControlledDB::WarmUp() const { graph_->WarmUp(); }

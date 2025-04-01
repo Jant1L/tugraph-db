@@ -9,14 +9,17 @@
 
 /**
  *  @file   olap_on_db.h
- *  @brief  TuGraph OLAP interface. To implement a plugin that perform graph analytics on TuGraph, user
- *          can load a Snapshot from the database, and then use the Gather-Apply-Scatter style interface
+ *  @brief  TuGraph OLAP interface. To implement a plugin that perform graph analytics on TuGraph,
+ * user can load a Snapshot from the database, and then use the Gather-Apply-Scatter style interface
  *          to do the computation.
  */
 
 #pragma once
 
+#include <exception>
 #include "lgraph/lgraph.h"
+#include "lgraph/lgraph_txn.h"
+#include "lgraph/lgraph_utils.h"
 #include "lgraph/olap_base.h"
 #include "fma-common/fma_stream.h"
 
@@ -61,7 +64,7 @@ static constexpr size_t SNAPSHOT_IN_EDGES = 1ul << 6;
  */
 template <typename EdgeData>
 class OlapOnDB : public OlapBase<EdgeData> {
-    GraphDB &db_;
+    GraphDB *db_;
     Transaction &txn_;
     ParallelVector<size_t> original_vids_;
     cuckoohash_map<size_t, size_t> vid_map_;
@@ -112,9 +115,9 @@ class OlapOnDB : public OlapBase<EdgeData> {
                 int num_threads = 0;
 #pragma omp parallel
                 {
-                  if (omp_get_thread_num() == 0) {
-                      num_threads = omp_get_num_threads();
-                  }
+                    if (omp_get_thread_num() == 0) {
+                        num_threads = omp_get_num_threads();
+                    }
                 };
 
                 std::vector<size_t> partition_offset(num_threads + 1, 0);
@@ -125,7 +128,7 @@ class OlapOnDB : public OlapBase<EdgeData> {
                     ParallelVector<size_t> local_out_index(this->num_vertices_ + 1);
                     ParallelVector<AdjUnit<EdgeData>> local_out_edges(MAX_NUM_EDGES);
 
-                    auto txn = db_.ForkTxn(txn_);
+                    auto txn = db_->ForkTxn(txn_);
                     int thread_id = omp_get_thread_num();
                     int num_threads = omp_get_num_threads();
                     auto vit = txn.GetVertexIterator();
@@ -275,10 +278,10 @@ class OlapOnDB : public OlapBase<EdgeData> {
         }
 
         if (this->num_vertices_ == 0) {
-            throw InputError("The graph vertex cannot be empty");
+            THROW_CODE(InputError, "The graph vertex cannot be empty");
         }
         if (this->num_edges_ == 0) {
-            throw InputError("The graph edge cannot be empty");
+            THROW_CODE(InputError, "The graph edge cannot be empty");
         }
         if (ShouldKillThisTask(task_ctx)) throw std::runtime_error("Task killed");
         if (this->num_vertices_ == 0) {
@@ -477,7 +480,6 @@ class OlapOnDB : public OlapBase<EdgeData> {
         auto task_ctx = GetThreadContext();
         auto worker = Worker::SharedWorker();
 
-
         // Read from TuGraph
         if ((flags_ & SNAPSHOT_PARALLEL) && txn_.IsReadOnly()) {
             this->out_index_.Resize(this->num_vertices_ + 1, (size_t)0);
@@ -489,14 +491,15 @@ class OlapOnDB : public OlapBase<EdgeData> {
                         num_threads = omp_get_num_threads();
                     }
                 };
+                num_threads = std::min(16, num_threads);
 
                 std::vector<size_t> out_edges_partition_offset(num_threads + 1, 0);
-#pragma omp parallel
+#pragma omp parallel num_threads(num_threads)
                 {
                     ParallelVector<size_t> local_out_index(this->num_vertices_);
                     ParallelVector<AdjUnit<EdgeData>> local_out_edges(MAX_NUM_EDGES);
 
-                    auto txn = db_.ForkTxn(txn_);
+                    auto txn = db_->ForkTxn(txn_);
                     int thread_id = omp_get_thread_num();
                     int num_threads = omp_get_num_threads();
                     auto vit = txn.GetVertexIterator();
@@ -512,6 +515,9 @@ class OlapOnDB : public OlapBase<EdgeData> {
                     for (size_t vi = partition_begin; vi < partition_end; vi++) {
                         if (vi % 64 == 0 && ShouldKillThisTask(task_ctx)) break;
                         vit.Goto(vi);
+                        if (!vit.IsValid() || vit.GetNumOutEdges() == 0) {
+                            continue;
+                        }
                         for (auto eit = vit.GetOutEdgeIterator(); eit.IsValid(); eit.Next()) {
                             size_t dst = eit.GetDst();
                             EdgeData edata;
@@ -811,7 +817,7 @@ class OlapOnDB : public OlapBase<EdgeData> {
                 std::vector<size_t> in_edges_partition_offset(num_threads + 1, 0);
 #pragma omp parallel
                 {
-                    auto txn = db_.ForkTxn(txn_);
+                    auto txn = db_->ForkTxn(txn_);
                     int thread_id = omp_get_thread_num();
                     int num_threads = omp_get_num_threads();
                     auto vit = txn.GetVertexIterator();
@@ -914,38 +920,42 @@ class OlapOnDB : public OlapBase<EdgeData> {
                     {};
                 }
             });
-//        } else {
-//            auto vit = txn_.GetVertexIterator();
-//            for (size_t vid = 0; vid < this->num_vertices_; vid++) {
-//                if (!vit.Goto(vid)) continue;
-//                for (auto eit = vit.GetOutEdgeIterator(); eit.IsValid(); eit.Next()) {
-//                    size_t dst = eit.GetDst();
-//                    AdjUnit<EdgeData> out_edge;
-//                    out_edge.neighbour = dst;
-//                    this->out_edges_.Append(out_edge, false);
-//                }
-//                if (flags_ & SNAPSHOT_UNDIRECTED) {
-//                    for (auto eit = vit.GetInEdgeIterator(); eit.IsValid(); eit.Next()) {
-//                        size_t src = eit.GetSrc();
-//                        AdjUnit<EdgeData> in_edge;
-//                        in_edge.neighbour = src;
-//                        this->out_edges_.Append(in_edge, false);
-//                    }
-//                } else {
-//                    for (auto eit = vit.GetInEdgeIterator(); eit.IsValid(); eit.Next()) {
-//                        size_t src = eit.GetSrc();
-//                        AdjUnit<EdgeData> in_edge;
-//                        in_edge.neighbour = src;
-//                        this->in_edges_.Append(in_edge, false);
-//                    }
-//                    this->in_index_[vid + 1] = this->in_edges_.Size();
-//                    this->in_degree_[vid] = this->in_index_[vid + 1] - this->in_index_[vid];
-//                }
-//                this->out_index_[vid + 1] = this->out_edges_.Size();
-//                this->out_degree_[vid] = this->out_index_[vid + 1] - this->out_index_[vid];
-//            }
-//            this->num_edges_ = this->out_edges_.Size();
-//            this->out_edges_.Resize(this->num_edges_);
+            //        } else {
+            //            auto vit = txn_.GetVertexIterator();
+            //            for (size_t vid = 0; vid < this->num_vertices_; vid++) {
+            //                if (!vit.Goto(vid)) continue;
+            //                for (auto eit = vit.GetOutEdgeIterator(); eit.IsValid(); eit.Next()) {
+            //                    size_t dst = eit.GetDst();
+            //                    AdjUnit<EdgeData> out_edge;
+            //                    out_edge.neighbour = dst;
+            //                    this->out_edges_.Append(out_edge, false);
+            //                }
+            //                if (flags_ & SNAPSHOT_UNDIRECTED) {
+            //                    for (auto eit = vit.GetInEdgeIterator(); eit.IsValid();
+            //                    eit.Next()) {
+            //                        size_t src = eit.GetSrc();
+            //                        AdjUnit<EdgeData> in_edge;
+            //                        in_edge.neighbour = src;
+            //                        this->out_edges_.Append(in_edge, false);
+            //                    }
+            //                } else {
+            //                    for (auto eit = vit.GetInEdgeIterator(); eit.IsValid();
+            //                    eit.Next()) {
+            //                        size_t src = eit.GetSrc();
+            //                        AdjUnit<EdgeData> in_edge;
+            //                        in_edge.neighbour = src;
+            //                        this->in_edges_.Append(in_edge, false);
+            //                    }
+            //                    this->in_index_[vid + 1] = this->in_edges_.Size();
+            //                    this->in_degree_[vid] = this->in_index_[vid + 1] -
+            //                    this->in_index_[vid];
+            //                }
+            //                this->out_index_[vid + 1] = this->out_edges_.Size();
+            //                this->out_degree_[vid] = this->out_index_[vid + 1] -
+            //                this->out_index_[vid];
+            //            }
+            //            this->num_edges_ = this->out_edges_.Size();
+            //            this->out_edges_.Resize(this->num_edges_);
         }
         this->lock_array_.Resize(this->num_vertices_);
         this->lock_array_.Fill(false);
@@ -953,7 +963,43 @@ class OlapOnDB : public OlapBase<EdgeData> {
 
  public:
     /**
-     * @brief Generate a graph with LightningGraph.
+     * @brief Generate a graph with LightningGraph. For V1/V2 Procedures
+     */
+    OlapOnDB(GraphDB *db, Transaction &txn, size_t flags = 0,
+             std::function<bool(VertexIterator &)> vertex_filter = nullptr,
+             std::function<bool(OutEdgeIterator &, EdgeData &)> out_edge_filter = nullptr)
+        : db_(db),
+          txn_(txn),
+          flags_(flags),
+          vertex_filter_(vertex_filter),
+          out_edge_filter_(out_edge_filter) {
+        if (db_ == nullptr && flags_ & SNAPSHOT_PARALLEL) {
+            LOG_WARN() << "SNAPSHOT_PARALLEL needs to pass in the db parameter";
+            flags_ -= SNAPSHOT_PARALLEL;
+        }
+        if (txn.GetNumVertices() == 0) {
+            throw std::runtime_error("The graph cannot be empty");
+        }
+//        if (vertex_filter != nullptr) {
+//            flags_ |= SNAPSHOT_IDMAPPING;
+//        }
+        flags_ |= SNAPSHOT_IDMAPPING;
+        Init(txn.GetNumVertices());
+
+        /*if (flags_ & SNAPSHOT_IDMAPPING) {
+            Construct();
+        } else {
+            if ((out_edge_filter == nullptr) && (flags_ & SNAPSHOT_PARALLEL) && txn_.IsReadOnly()) {
+                ConstructWithDegree();
+            } else {
+                ConstructWithVid();
+            }
+        }*/
+        Construct();
+    }
+
+    /**
+     * @brief Generate a graph with LightningGraph. For V1 Procedures
      *
      * @exception std::runtime_error  Raised when a runtime error condition
      *                                occurs.
@@ -966,9 +1012,7 @@ class OlapOnDB : public OlapBase<EdgeData> {
      * @param [in,out]    out_edge_filter (Optional) A function filtering out
      *                                    edges.
      *
-     *                                    Note that the transaction must be read-
-     *                                    only if SNAPSHOT_PARALLEL is specified
-     *                                    (actually read-write transactions are
+     *                                    Note: read-write transactions are
      *                                    not recommended here for safety, e.g.
      *                                    some vertices might be removed causing
      *                                    inconsistencies of the analysis, and
@@ -986,42 +1030,19 @@ class OlapOnDB : public OlapBase<EdgeData> {
     OlapOnDB(GraphDB &db, Transaction &txn, size_t flags = 0,
              std::function<bool(VertexIterator &)> vertex_filter = nullptr,
              std::function<bool(OutEdgeIterator &, EdgeData &)> out_edge_filter = nullptr)
-        : db_(db),
-          txn_(txn),
-          flags_(flags),
-          vertex_filter_(vertex_filter),
-          out_edge_filter_(out_edge_filter) {
-        if (txn.GetNumVertices() == 0) {
-            throw std::runtime_error("The graph cannot be empty");
-        }
-        if (vertex_filter != nullptr) {
-            flags_ |= SNAPSHOT_IDMAPPING;
-        }
-        Init(txn.GetNumVertices());
-
-        if (flags_ & SNAPSHOT_IDMAPPING) {
-            Construct();
-        } else {
-            if ((out_edge_filter == nullptr) && (flags_ & SNAPSHOT_PARALLEL) && txn_.IsReadOnly()) {
-                ConstructWithDegree();
-            } else {
-                ConstructWithVid();
-            }
-        }
-    }
+        : OlapOnDB(&db, txn, flags, vertex_filter, out_edge_filter) {}
 
     // Filter subgraphs based on a set of triples of point labels, edge labels, and point labels
     OlapOnDB(GraphDB &db, Transaction &txn, std::vector<std::vector<std::string>> label_list,
-        size_t flags = 0): db_(db),
-                           txn_(txn),
-                           flags_(flags) {
+             size_t flags = 0)
+        : db_(&db), txn_(txn), flags_(flags) {
         if (txn.GetNumVertices() == 0) {
             throw std::runtime_error("The graph cannot be empty");
         }
         flags_ |= SNAPSHOT_IDMAPPING;
         Init(txn.GetNumVertices());
         std::vector<std::vector<size_t>> label_id_list;
-        for (auto& labels : label_list) {
+        for (auto &labels : label_list) {
             std::vector<size_t> label_id;
             label_id.push_back(txn.GetVertexLabelId(labels[0]));
             label_id.push_back(txn.GetEdgeLabelId(labels[1]));
@@ -1038,9 +1059,9 @@ class OlapOnDB : public OlapBase<EdgeData> {
                 int num_threads = 0;
 #pragma omp parallel
                 {
-                  if (omp_get_thread_num() == 0) {
-                      num_threads = omp_get_num_threads();
-                  }
+                    if (omp_get_thread_num() == 0) {
+                        num_threads = omp_get_num_threads();
+                    }
                 };
 
                 std::vector<size_t> partition_offset(num_threads + 1, 0);
@@ -1053,7 +1074,7 @@ class OlapOnDB : public OlapBase<EdgeData> {
 
                     local_out_index.Append(0, false);
 
-                    auto txn = db_.ForkTxn(txn_);
+                    auto txn = db_->ForkTxn(txn_);
                     int thread_id = omp_get_thread_num();
                     int num_threads = omp_get_num_threads();
                     auto vit = txn.GetVertexIterator();
@@ -1073,8 +1094,8 @@ class OlapOnDB : public OlapBase<EdgeData> {
                                     while (eit.IsValid()) {
                                         auto dst = eit.GetDst();
                                         vit.Goto(dst);
-                                        if (size_t(eit.GetLabelId()) == labels[1]
-                                            && vit.GetLabelId() == labels[2]) {
+                                        if (size_t(eit.GetLabelId()) == labels[1] &&
+                                            vit.GetLabelId() == labels[2]) {
                                             keepVertex = true;
                                             AdjUnit<EdgeData> out_edge;
                                             out_edge.neighbour = dst;
@@ -1088,8 +1109,8 @@ class OlapOnDB : public OlapBase<EdgeData> {
                                     while (eit.IsValid()) {
                                         auto src = eit.GetSrc();
                                         vit.Goto(src);
-                                        if (size_t(eit.GetLabelId()) == labels[1]
-                                            && vit.GetLabelId() == labels[0]) {
+                                        if (size_t(eit.GetLabelId()) == labels[1] &&
+                                            vit.GetLabelId() == labels[0]) {
                                             keepVertex = true;
                                             break;
                                         }
@@ -1179,10 +1200,10 @@ class OlapOnDB : public OlapBase<EdgeData> {
         }
 
         if (this->num_vertices_ == 0) {
-            throw InputError("The graph vertex cannot be empty");
+            THROW_CODE(InputError, "The graph vertex cannot be empty");
         }
         if (this->num_edges_ == 0) {
-            throw InputError("The graph edge cannot be empty");
+            THROW_CODE(InputError, "The graph edge cannot be empty");
         }
         if (ShouldKillThisTask(task_ctx)) throw std::runtime_error("Task killed");
         if (this->num_vertices_ == 0) {
@@ -1377,12 +1398,30 @@ class OlapOnDB : public OlapBase<EdgeData> {
         if (ShouldKillThisTask(task_ctx)) throw std::runtime_error("Task killed");
     }
 
+    /**
+     * @brief Generate a graph without LightningGraph. For V2 Procedures
+     *
+     * @exception std::runtime_error  Raised when a runtime error condition
+     *                                occurs.
+     *
+     * @param [in,out]    txn             The transaction.
+     * @param             flags           (Optional) The generation flags.
+     * @param [in,out]    vertex_filter   (Optional) A function filtering
+     *                                    vertices.
+     * @param [in,out]    out_edge_filter (Optional) A function filtering out
+     *                                    edges.
+     **/
+    OlapOnDB(Transaction &txn, size_t flags = 0,
+             std::function<bool(VertexIterator &)> vertex_filter = nullptr,
+             std::function<bool(OutEdgeIterator &, EdgeData &)> out_edge_filter = nullptr)
+        : OlapOnDB(nullptr, txn, flags, vertex_filter, out_edge_filter) {}
+
     OlapOnDB() = delete;
 
     OlapOnDB(const OlapOnDB<EdgeData> &rhs) = delete;
 
     OlapOnDB(OlapOnDB<EdgeData> &&rhs) = default;
-    OlapOnDB<EdgeData>& operator=(OlapOnDB<EdgeData> &&rhs) {
+    OlapOnDB<EdgeData> &operator=(OlapOnDB<EdgeData> &&rhs) {
         printf("OlapOnDB assigment\n");
         return *this;
     }
@@ -1401,12 +1440,12 @@ class OlapOnDB : public OlapBase<EdgeData> {
         std::function<void(VertexIterator &, VertexData &)> extract) {
         auto task_ctx = GetThreadContext();
         ParallelVector<VertexData> a(this->num_vertices_, this->num_vertices_);
-        if (txn_.IsReadOnly()) {
+        if (txn_.IsReadOnly() && db_ != nullptr) {
             auto worker = Worker::SharedWorker();
             worker->Delegate([&]() {
 #pragma omp parallel
                 {
-                    auto txn = db_.ForkTxn(txn_);
+                    auto txn = db_->ForkTxn(txn_);
                     int thread_id = omp_get_thread_num();
                     int num_threads = omp_get_num_threads();
                     size_t start = this->num_vertices_ / num_threads * thread_id;
@@ -1456,14 +1495,56 @@ class OlapOnDB : public OlapBase<EdgeData> {
      *
      */
     template <typename VertexData>
-    void WriteToFile(ParallelVector<VertexData>& vertex_data,
-            const std::string& output_file) {
+    void WriteToFile(ParallelVector<VertexData> &vertex_data, const std::string &output_file,
+                     std::function<bool(size_t vid, VertexData &vdata)> output_filter = nullptr) {
         fma_common::OutputFmaStream fout;
         fout.Open(output_file, 64 << 20);
         for (size_t i = 0; i < this->num_vertices_; ++i) {
-            std::string line = fma_common::StringFormatter::Format(
-                "{} {}\n", OriginalVid(i), vertex_data[i]);
+            if (output_filter != nullptr && !output_filter(i, vertex_data[i])) {
+                continue;
+            }
+            std::string line =
+                fma_common::StringFormatter::Format("{} {}\n", OriginalVid(i), vertex_data[i]);
             fout.Write(line.c_str(), line.size());
+        }
+    }
+
+    /**
+     * @brief    Write vertex data(include label、primary_field、field_data) to a file.
+     *
+     * @param    detail_output  always true
+     * @param    vertex_data    The parallel vector storing the vertex data.
+     * @param    output_file    The path to the output file.
+     *
+     */
+    template <typename VertexData>
+    void WriteToFile(bool detail_output, ParallelVector<VertexData> &vertex_data,
+                     const std::string &output_file,
+                     std::function<bool(size_t vid, VertexData &vdata)> output_filter = nullptr) {
+        if (!detail_output) {
+            THROW_CODE(InputError, "Just support deatail output!");
+        }
+        fma_common::OutputFmaStream fout;
+        fout.Open(output_file, 64 << 20);
+        for (size_t i = 0; i < this->num_vertices_; ++i) {
+            if (output_filter != nullptr && !output_filter(i, vertex_data[i])) {
+                continue;
+            }
+            auto vit = txn_.GetVertexIterator();
+            vit.Goto(OriginalVid(i));
+            if (vit.IsValid()) {
+                auto vit_label = vit.GetLabel();
+                auto primary_field = txn_.GetVertexPrimaryField(vit_label);
+                auto field_data = vit.GetField(primary_field);
+                json curJson;
+                curJson["vid"] = OriginalVid(i);
+                curJson["label"] = vit_label;
+                curJson["primary_field"] = primary_field;
+                curJson["field_data"] = field_data.ToString();
+                curJson["result"] = vertex_data[i];
+                auto content = curJson.dump() + "\n";
+                fout.Write(content.c_str(), content.size());
+            }
         }
     }
 
@@ -1475,9 +1556,11 @@ class OlapOnDB : public OlapBase<EdgeData> {
      *
      */
     template <typename VertexData>
-    void WriteToGraphDB(ParallelVector<VertexData>& vertex_data,
-                const std::string& vertex_field) {
-        auto write_txn = db_.CreateWriteTxn();
+    void WriteToGraphDB(ParallelVector<VertexData> &vertex_data, const std::string &vertex_field) {
+        if (db_ == nullptr) {
+            throw std::runtime_error("can't write to graph because db is null");
+        }
+        auto write_txn = db_->CreateWriteTxn();
         auto vit = write_txn.GetVertexIterator();
         for (size_t i = 0; i < this->num_vertices_; i++) {
             FieldData local_distance(std::to_string(vertex_data[i]));
@@ -1531,7 +1614,7 @@ class OlapOnDB : public OlapBase<EdgeData> {
  */
 template <typename EdgeData>
 std::function<bool(OutEdgeIterator &, EdgeData &)> edge_convert_default =
-        [] (OutEdgeIterator &eit, EdgeData &edge_data) -> bool {
+    [](OutEdgeIterator &eit, EdgeData &edge_data) -> bool {
     edge_data = 1;
     return true;
 };
@@ -1543,7 +1626,7 @@ std::function<bool(OutEdgeIterator &, EdgeData &)> edge_convert_default =
  */
 template <typename EdgeData>
 std::function<bool(OutEdgeIterator &, EdgeData &)> edge_convert_weight =
-        [](OutEdgeIterator &eit, EdgeData &edge_data) -> bool {
+    [](OutEdgeIterator &eit, EdgeData &edge_data) -> bool {
     edge_data = eit.GetField("weight").real();
     return true;
 };

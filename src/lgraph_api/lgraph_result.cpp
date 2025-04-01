@@ -11,7 +11,7 @@
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  */
-
+#include <memory>
 #include "fma-common/string_formatter.h"
 #include "lgraph/lgraph_result.h"
 #include "lgraph_api/result_element.h"
@@ -186,6 +186,9 @@ void Record::Insert(const std::string &key, const lgraph_api::OutEdgeIterator &o
 void Record::Insert(const std::string &key, const int64_t vid, lgraph_api::Transaction *txn) {
     auto core_txn = txn->GetTxn().get();
     auto vit = core_txn->GetVertexIterator(vid);
+    if (!vit.IsValid()) {
+        THROW_CODE(InternalError, "invalid vid {} for inserting vertex record", vid);
+    }
     lgraph_result::Node node;
     node.id = vid;
     node.label = core_txn->GetVertexLabel(vit);
@@ -206,6 +209,9 @@ void Record::InsertVertexByID(const std::string &key, int64_t node_id) {
 void Record::Insert(const std::string &key, EdgeUid &uid, lgraph_api::Transaction *txn) {
     auto core_txn = txn->GetTxn().get();
     auto eit = core_txn->GetOutEdgeIterator(uid, false);
+    if (!eit.IsValid()) {
+        THROW_CODE(InternalError, "invalid euid {} for inserting edge record", uid.ToString());
+    }
     lgraph_result::Relationship repl;
     repl.id = uid.eid;
     repl.src = uid.src;
@@ -213,6 +219,7 @@ void Record::Insert(const std::string &key, EdgeUid &uid, lgraph_api::Transactio
     repl.label_id = uid.lid;
     repl.label = core_txn->GetEdgeLabel(eit);
     repl.tid = uid.tid;
+    repl.forward = false;
     // repl.forward is unknown
     auto rel_fields = core_txn->GetEdgeFields(eit);
     for (auto &property : rel_fields) {
@@ -229,6 +236,7 @@ void Record::InsertEdgeByID(const std::string &key, const EdgeUid &uid) {
     repl.dst = uid.dst;
     repl.label_id = uid.lid;
     repl.tid = uid.tid;
+    repl.forward = false;
     // repl.label is unknown
     // repl.forward is unknown
     record[key] = std::shared_ptr<ResultElement>(new ResultElement(repl));
@@ -238,53 +246,73 @@ void Record::InsertEdgeByID(const std::string &key, const EdgeUid &uid) {
 Result::Result() : row_count_(-1) {}
 
 void Record::Insert(const std::string &key, const traversal::Path &path,
-                    lgraph_api::Transaction *txn) {
+                    lgraph_api::Transaction *txn, lgraph_api::NODEMAP& node_map,
+                    lgraph_api::RELPMAP& relp_map) {
     auto core_txn = txn->GetTxn().get();
     if (!HasKey(key) || header[key] != LGraphType::PATH) {
         throw std::runtime_error(
             FMA_FMT("[STANDARD RESULT ERROR] the variable {} is not exist", key));
     }
-    lgraph_result::Path result_path;
-    if (path.Length() == 0) {
-        record[key] = std::shared_ptr<ResultElement>(new ResultElement(result_path));
-    }
+    lgraph_result::Path* result_path = new lgraph_result::Path();
     for (size_t i = 0; i < path.Length(); i++) {
-        lgraph_result::Node node;
+        std::shared_ptr<lgraph_result::Node> node;
         auto vid = path.GetNthVertex(i).GetId();
         auto vit = core_txn->GetVertexIterator(vid);
-        node.id = vid;
-        node.label = core_txn->GetVertexLabel(vit);
-        for (const auto &property : core_txn->GetVertexFields(vit)) {
-            node.properties[property.first] = property.second;
+        if (node_map.find(vid) != node_map.end()) {
+            node = node_map[vid];
+        } else {
+            node = std::make_shared<lgraph_result::Node>();
+            node->id = vid;
+            node->label = core_txn->GetVertexLabel(vit);
+            for (const auto &property : core_txn->GetVertexFields(vit)) {
+                node->properties[property.first] = property.second;
+            }
+            node_map[vid] = node;
         }
-        result_path.emplace_back(lgraph_result::PathElement(std::move(node)));
+        result_path->emplace_back(lgraph_result::PathElement(std::move(node)));
         auto edge = path.GetNthEdge(i);
-        lgraph_result::Relationship repl;
+        std::shared_ptr<lgraph_result::Relationship> repl;
         auto euid = lgraph::EdgeUid(edge.GetSrcVertex().GetId(), edge.GetDstVertex().GetId(),
                                     edge.GetLabelId(), edge.GetTemporalId(), edge.GetEdgeId());
         auto eit = core_txn->GetOutEdgeIterator(euid, false);
-        repl.id = euid.eid;
-        repl.src = euid.src;
-        repl.dst = euid.dst;
-        repl.label_id = euid.lid;
-        repl.tid = euid.tid;
-        repl.label = core_txn->GetEdgeLabel(eit);
-        repl.forward = ((int64_t)vid == euid.src);
-        for (const auto &property : core_txn->GetEdgeFields(eit)) {
-            repl.properties[property.first] = property.second;
+        if (!eit.IsValid()) {
+            THROW_CODE(InternalError, "invalid euid {} for inserting path record", euid.ToString());
         }
-        result_path.emplace_back(lgraph_result::PathElement(std::move(repl)));
+        if (relp_map.find(euid) != relp_map.end() &&
+            relp_map[euid]->forward == (((int64_t)vid == euid.src))) {
+            repl = relp_map[euid];
+        } else {
+            repl = std::make_shared<lgraph_result::Relationship>();
+            repl->id = euid.eid;
+            repl->src = euid.src;
+            repl->dst = euid.dst;
+            repl->label_id = euid.lid;
+            repl->tid = euid.tid;
+            repl->label = core_txn->GetEdgeLabel(eit);
+            repl->forward = ((int64_t)vid == euid.src);
+            for (const auto &property : core_txn->GetEdgeFields(eit)) {
+                repl->properties[property.first] = property.second;
+            }
+            relp_map[euid] = repl;
+        }
+        result_path->emplace_back(lgraph_result::PathElement(std::move(repl)));
     }
-    lgraph_result::Node node;
+    std::shared_ptr<lgraph_result::Node> node;
     auto vid = path.GetEndVertex().GetId();
     auto vit = core_txn->GetVertexIterator(vid);
-    node.id = vid;
-    node.label = core_txn->GetVertexLabel(vit);
-    for (const auto &property : core_txn->GetVertexFields(vit)) {
-        node.properties[property.first] = property.second;
+    if (node_map.find(vid) != node_map.end()) {
+        node = node_map[vid];
+    } else {
+        node = std::make_shared<lgraph_result::Node>();
+        node->id = vid;
+        node->label = core_txn->GetVertexLabel(vit);
+        for (const auto &property : core_txn->GetVertexFields(vit)) {
+            node->properties[property.first] = property.second;
+        }
+        node_map[vid] = node;
     }
-    result_path.emplace_back(lgraph_result::PathElement(std::move(node)));
-    record[key] = std::shared_ptr<ResultElement>(new ResultElement(result_path));
+    result_path->emplace_back(lgraph_result::PathElement(std::move(node)));
+    record[key] = std::shared_ptr<ResultElement>(new ResultElement(std::move(result_path)));
     length_++;
 }
 
@@ -297,6 +325,19 @@ Record *Result::MutableRecord() {
     result.emplace_back(Record(header));
     row_count_++;
     return &result[row_count_];
+}
+
+void Result::Reserve(size_t n) {
+    result.reserve(n);
+}
+
+void Result::Resize(size_t n) {
+    result.resize(n, Record(header));
+    row_count_ = (int64_t)(n - 1);
+}
+
+Record* Result::At(size_t n) {
+    return &result.at(n);
 }
 
 void Result::ResetHeader(const std::vector<std::pair<std::string, LGraphType>> &new_header) {
@@ -368,6 +409,11 @@ std::string Result::Dump(bool is_standard) {
     }
 }
 
+void Result::ClearRecords() {
+    result.clear();
+    row_count_ = -1;
+}
+
 std::vector<std::string> Result::BoltHeader() {
     std::vector<std::string> ret;
     for (auto& h : header) {
@@ -378,16 +424,19 @@ std::vector<std::string> Result::BoltHeader() {
 
 std::vector<std::vector<std::any>> Result::BoltRecords() {
     std::vector<std::vector<std::any>> ret;
+    int64_t* v_eid = nullptr;
+    if (is_python_driver_) {
+        v_eid = &v_eid_;
+    }
     for (auto& record : result) {
         std::vector<std::any> line;
         for (auto& h : header) {
-            line.push_back(record.record.at(h.first)->ToBolt());
+            line.push_back(record.record.at(h.first)->ToBolt(v_eid));
         }
         ret.emplace_back(std::move(line));
     }
     return ret;
 }
-
 
 void Result::Load(const std::string &output) {
     try {

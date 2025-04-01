@@ -49,7 +49,7 @@ class Traversal : public OpBase {
         expands_;  // <start, neighbor, relp, towards, has_filter>
 
     /** result */
-    cuckoohash_map<lgraph::FieldData, int, lgraph::FieldDataHash> map_;
+    cuckoohash_map<lgraph::FieldData, int, lgraph::FieldData::Hash> map_;
     std::vector<lgraph::FieldData> result_buffer_;
     size_t result_idx_;
 
@@ -229,7 +229,7 @@ class Traversal : public OpBase {
         for (auto &num : map_.lock_table()) {
             if (noneagg_property_.empty()) {
                 result_buffer_.emplace_back(lgraph::FieldData(num.second));
-            } else {  // result_buffer_格式：[agg, key, agg, key, agg, key, ...]
+            } else {  // result_buffer_ format：[agg, key, agg, key, agg, key, ...]
                 result_buffer_.emplace_back(lgraph::FieldData(num.second));
                 result_buffer_.emplace_back(num.first);
             }

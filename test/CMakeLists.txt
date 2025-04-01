@@ -30,8 +30,9 @@ add_executable(unit_test
         test_core_exception.cpp
         test_cpp_procedure.cpp
         test_cppresetsdk_json.cpp
-        test_cypher.cpp
+        test_cypher_v2.cpp
         test_cypher_plan.cpp
+        test_cypher_field_data.cpp
         test_data_type.cpp
         test_db_management_client.cpp
         test_dense_string.cpp
@@ -39,6 +40,7 @@ add_executable(unit_test
         test_embed.cpp
         test_field_data_helper.cpp
         test_field_extractor.cpp
+        test_field_extractor_v2.cpp
         test_fulltext.cpp
         test_galaxy.cpp
         test_global_config.cpp
@@ -115,6 +117,7 @@ add_executable(unit_test
         test_vertex_index.cpp
         test_vid_table.cpp
         test_edge_constraint.cpp
+        test_upsert.cpp
         test_olap_vertex_traversal.cpp
         test_lgraph_log.cpp
         test_detach_property.cpp
@@ -126,12 +129,23 @@ add_executable(unit_test
         test_ha_lgraph_peer.cpp
         test_lgraph_cli.cpp
         test_ha_witness.cpp
+        test_ha_full_import.cpp
+        test_del_detached_label.cpp
+        test_null_index.cpp
+        test_alter_detached_label.cpp
+        test_vertex_composite_index.cpp
+        test_vsag_index.cpp
+        test_faiss_index.cpp
         ${LGRAPH_ROOT_DIR}/src/client/cpp/rpc/lgraph_rpc_client.cpp
         ${LGRAPH_ROOT_DIR}/src/client/cpp/restful/rest_client.cpp
         ${LGRAPH_ROOT_DIR}/src/import/import_client.cpp
+        ${LGRAPH_ROOT_DIR}/src/core/vector_index.cpp
 )
 
 target_link_libraries(unit_test
+        vsag
+        /opt/OpenBLAS/lib/libopenblas.a
+        faiss
         lgraph_server_lib
         geax_isogql
         bolt
@@ -143,7 +157,5 @@ target_link_libraries(unit_test
 
 target_compile_definitions(unit_test PRIVATE
         FMA_IN_UNIT_TEST=1)
-# install
-install(TARGETS unit_test
-        RUNTIME DESTINATION bin
-        LIBRARY DESTINATION lib64)
+
+add_dependencies(unit_test ${LGRAPH_TOOLKITS} lgraph_server)

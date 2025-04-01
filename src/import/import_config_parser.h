@@ -47,6 +47,7 @@ enum KeyWord {
     POINT,
     LINESTRING,
     POLYGON,
+    FLOAT_VECTOR,
     LABEL,  // VERTEX_LABEL or EDGE_LABEL
     VERTEX_LABEL,
     EDGE_LABEL,
@@ -80,6 +81,7 @@ class KeyWordFunc {
             {KeyWord::POINT, "POINT"},
             {KeyWord::LINESTRING, "LINESTRING"},
             {KeyWord::POLYGON, "POLYGON"},
+            {KeyWord::FLOAT_VECTOR, "FLOAT_VECTOR"},
             {KeyWord::LABEL, "LABEL"},
             {KeyWord::VERTEX_LABEL, "VERTEX_LABEL"},
             {KeyWord::EDGE_LABEL, "EDGE_LABEL"},
@@ -114,7 +116,7 @@ class KeyWordFunc {
             auto& k2s = KeyWordToStrMap();
             std::map<KeyWord, FieldType> ret;
             for (auto& kv : k2s) {
-                if (kv.first > KeyWord::BLOB) break;
+                if (kv.first > KeyWord::FLOAT_VECTOR) break;
                 FieldType type = FieldType::NUL;
                 if (!field_data_helper::TryGetFieldType(kv.second, type)) {
                     LOG_ERROR() << FMA_FMT("Keyword string [{}] is invalid type string", kv.second);
@@ -207,16 +209,16 @@ struct ColumnSpec {
     bool fulltext = false;
 
     inline bool CheckValid() const {
-        if (primary && !(index && idxType == IndexType::GlobalUniqueIndex)) throw InputError(
-            FMA_FMT("primary {} should be index and unique", name));
+        if (primary && !(index && idxType == IndexType::GlobalUniqueIndex)) THROW_CODE(InputError,
+            "primary {} should be index and unique", name);
         if ((idxType == IndexType::GlobalUniqueIndex || idxType == IndexType::PairUniqueIndex)
-            && optional) throw InputError(
+            && optional) THROW_CODE(InputError,
             FMA_FMT("unique/primary index {} should not be optional", name));
-        if (type == FieldType ::BLOB && index) throw InputError(
+        if (type == FieldType ::BLOB && index) THROW_CODE(InputError,
             FMA_FMT("BLOB field {} should not be indexed", name));
-        if (type != FieldType::STRING && fulltext) throw InputError(
+        if (type != FieldType::STRING && fulltext) THROW_CODE(InputError,
             FMA_FMT("fulltext index {} only supports STRING type", name));
-        if (type != FieldType::INT64 && temporal) throw InputError(
+        if (type != FieldType::INT64 && temporal) THROW_CODE(InputError,
             FMA_FMT("edge label [{}] temporal field [{}] should be INT64", name));
         return true;
     }
@@ -291,7 +293,7 @@ struct LabelDesc {
     std::vector<ColumnSpec> columns;
     EdgeConstraints edge_constraints;
     bool is_vertex;
-    bool detach_property{false};
+    bool detach_property{true};
     LabelDesc() {}
     std::string ToString() const {
         std::string prefix = is_vertex ? "vertex" : "edge";
@@ -413,7 +415,7 @@ struct LabelDesc {
         return x == y;
     }
 
-    std::map<std::string, lgraph::FieldSpec> GetSchemaDef() {
+    std::map<std::string, lgraph::FieldSpec> GetSchemaDef() const {
         std::map<std::string, FieldSpec> ret;
         for (size_t i = 0; i < columns.size(); i++) {
             auto& c = columns[i];
@@ -434,11 +436,11 @@ struct LabelDesc {
                 if (it->primary)
                     return true;
                 else
-                    throw InputError(
-                        FMA_FMT("[{}] is not primary field of label [{}]", field_name, name));
+                    THROW_CODE(InputError,
+                        "[{}] is not primary field of label [{}]", field_name, name);
             }
         }
-        throw InputError(FMA_FMT("[{}] is not valid field name of label [{}]", field_name, name));
+        THROW_CODE(InputError, "[{}] is not valid field name of label [{}]", field_name, name);
         return false;
     }
 
@@ -448,18 +450,18 @@ struct LabelDesc {
             it->CheckValid();
             if (it->primary && is_vertex) {
                 if (find_primary) {
-                    throw InputError(
-                        FMA_FMT("vertex label [{}] should has no more than one primary.", name));
+                    THROW_CODE(InputError,
+                        "vertex label [{}] should has no more than one primary.", name);
                 }
                 find_primary = true;
             }
         }
         if (is_vertex && !find_primary) {
-            throw InputError(FMA_FMT("vertex label [{}] has no primary", name));
+            THROW_CODE(InputError, "vertex label [{}] has no primary", name);
         }
         if (is_vertex && !edge_constraints.empty()) {
-            throw InputError(
-                FMA_FMT("label [{}] type is vertex, but edge_constraints is not empty", name));
+            THROW_CODE(InputError,
+                "label [{}] type is vertex, but edge_constraints is not empty", name);
         }
         return true;
     }
@@ -633,7 +635,8 @@ struct CsvDesc {
     }
 
  private:
-    FieldSpec GetFieldSpec(std::vector<FieldSpec> field_specs, std::string name) const {
+    FieldSpec GetFieldSpec(const std::vector<FieldSpec>& field_specs,
+                           const std::string& name) const {
         for (const auto& fs : field_specs) {
             if (fs.name == name) {
                 return fs;
@@ -650,7 +653,7 @@ struct SchemaDesc {
 
     size_t Size() const { return label_desc.size(); }
 
-    LabelDesc FindVertexLabel(std::string label) const {
+    LabelDesc FindVertexLabel(const std::string& label) const {
         for (const auto& it : label_desc)
             if (it.is_vertex && it.name == label) {
                 return it;
@@ -658,7 +661,7 @@ struct SchemaDesc {
         throw std::runtime_error(FMA_FMT("vertex label [{}] not found in schema", label));
     }
 
-    LabelDesc FindEdgeLabel(std::string label) const {
+    LabelDesc FindEdgeLabel(const std::string& label) const {
         for (const auto& it : label_desc)
             if (!it.is_vertex && it.name == label) {
                 return it;
@@ -682,16 +685,16 @@ struct SchemaDesc {
     }
 
     bool CheckValid() {
-        std::set<std::string> set_vertex, set_edge;
+        std::unordered_set<std::string> set_vertex, set_edge;
         for (const auto& ld : label_desc) {
             ld.CheckValid();
             if (ld.IsVertex()) {
                 if (set_vertex.find(ld.name) != set_vertex.end())
-                    throw InputError(FMA_FMT("Vertex label [{}] appears more than once!", ld.name));
+                    THROW_CODE(InputError, "Vertex label [{}] appears more than once!", ld.name);
                 set_vertex.insert(ld.name);
             } else {
                 if (set_edge.find(ld.name) != set_edge.end())
-                    throw InputError(FMA_FMT("Edge label [{}] appears more than once!", ld.name));
+                    THROW_CODE(InputError, "Edge label [{}] appears more than once!", ld.name);
                 set_edge.insert(ld.name);
             }
         }
@@ -700,7 +703,7 @@ struct SchemaDesc {
 
     void Clear() { label_desc.clear(); }
 
-    SchemaDesc DifferenceSet(SchemaDesc rhs) {
+    SchemaDesc DifferenceSet(const SchemaDesc& rhs) {
         SchemaDesc schema;
         for (auto& ld : this->label_desc) {
             LabelDesc x;
@@ -717,8 +720,8 @@ struct SchemaDesc {
             } else {
                 // find, check if equal
                 if (!(x == ld)) {
-                    throw InputError(FMA_FMT("{} and {} not comparable in two schema", x.ToString(),
-                                             ld.ToString()));
+                    THROW_CODE(InputError, "{} and {} not comparable in two schema", x.ToString(),
+                                             ld.ToString());
                 }
             }
         }
@@ -775,78 +778,78 @@ class ImportConfParser {
     static SchemaDesc ParseSchema(const nlohmann::json& conf) {
         SchemaDesc sd;
         if (!conf.contains("schema")) {
-            throw InputError("Missing `schema` definition");
+            THROW_CODE(InputError, "Missing `schema` definition");
         }
         if (!conf["schema"].is_array()) {
-            throw InputError("\"schema\" is not array");
+            THROW_CODE(InputError, "\"schema\" is not array");
         }
         for (auto& s : conf["schema"]) {
             LabelDesc ld;
             if (!s.contains("label") || !s.contains("type")) {
-                throw InputError(R"(Missing "label" or "type" definition)");
+                THROW_CODE(InputError, R"(Missing "label" or "type" definition)");
             }
             ld.name = s["label"];
             ld.is_vertex = s["type"] == "VERTEX";
             if (ld.is_vertex) {
                 if (!s.contains("primary") || !s.contains("properties")) {
-                    throw InputError(FMA_FMT(
-                        R"(Label[{}]: Missing "primary" or "properties" definition)", ld.name));
+                    THROW_CODE(InputError,
+                        R"(Label[{}]: Missing "primary" or "properties" definition)", ld.name);
                 }
                 if (s.contains("temporal")) {
-                    throw InputError(FMA_FMT(
-                        R"(Label[{}]: "temporal" is not supported in Vertex)", ld.name));
+                    THROW_CODE(InputError,
+                        R"(Label[{}]: "temporal" is not supported in Vertex)", ld.name);
                 }
                 for (auto & p : s["properties"]) {
                     if (p.contains("pair_unique")) {
-                        throw InputError(FMA_FMT(
-                            R"(Label[{}]: "pair_unique index" is not supported in Vertex)", ld.name));
+                        THROW_CODE(InputError,
+                            R"(Label[{}]: "pair_unique index" is not supported in Vertex)", ld.name);
                     }
                 }
             } else {
                 if (s.contains("primary")) {
-                    throw InputError(FMA_FMT(
-                        R"(Label[{}]: "primary" is not supported in Edge)", ld.name));
+                    THROW_CODE(InputError,
+                        R"(Label[{}]: "primary" is not supported in Edge)", ld.name);
                 }
                 if (s.contains("constraints")) {
                     if (!s["constraints"].is_array())
-                        throw InputError(
-                            FMA_FMT(R"(Label[{}]: "constraints" is not array)", ld.name));
+                        THROW_CODE(InputError,
+                            R"(Label[{}]: "constraints" is not array)", ld.name);
                     for (auto& p : s["constraints"]) {
                         if (!p.is_array() || p.size() != 2)
-                            throw InputError(FMA_FMT(
-                                R"(Label[{}]: "constraints" element size should be 2)", ld.name));
-                        ld.edge_constraints.push_back(std::make_pair(p[0], p[1]));
+                            THROW_CODE(InputError,
+                                R"(Label[{}]: "constraints" element size should be 2)", ld.name);
+                        ld.edge_constraints.emplace_back(p[0], p[1]);
                     }
                 }
                 if (s.contains("properties")) {
                     for (auto& p : s["properties"]) {
                         if (p.contains("pair_unique") && p["pair_unique"]
                             && p.contains("unique") && p["unique"]) {
-                            throw InputError(
-                                FMA_FMT("Label[{}]: pair_unique and unique configuration cannot"
+                            THROW_CODE(InputError,
+                                "Label[{}]: pair_unique and unique configuration cannot"
                                         " occur simultaneously)",
-                                        ld.name));
+                                        ld.name);
                         }
                     }
                 }
             }
             if (s.contains("properties")) {
                 if (!s["properties"].is_array()) {
-                    throw InputError(FMA_FMT("Label[{}]: \"properties\" is not array", ld.name));
+                    THROW_CODE(InputError, "Label[{}]: \"properties\" is not array", ld.name);
                 }
                 for (auto& p : s["properties"]) {
                     ColumnSpec cs;
                     if (!p.contains("name") || !p.contains("type")) {
-                        throw InputError(FMA_FMT(
+                        THROW_CODE(InputError,
                             R"(Label[{}]: Missing "name" or "type" in "properties" definition)",
-                            ld.name));
+                            ld.name);
                     }
                     if (p["name"] == KeyWordFunc::GetStrFromKeyWord(KeyWord::SKIP) ||
                         p["name"] == KeyWordFunc::GetStrFromKeyWord(KeyWord::SRC_ID) ||
                         p["name"] == KeyWordFunc::GetStrFromKeyWord(KeyWord::DST_ID)) {
-                        throw InputError(FMA_FMT(
+                        THROW_CODE(InputError,
                             R"(Label[{}]: Property name cannot be "SKIP" or "SRC_ID" or "DST_ID")",
-                            ld.name));
+                            ld.name);
                     }
                     cs.name = p["name"];
                     cs.type = KeyWordFunc::GetFieldTypeFromStr(p["type"]);
@@ -895,8 +898,8 @@ class ImportConfParser {
             }
             if (s.contains("detach_property")) {
                 if (!s["detach_property"].is_boolean()) {
-                    throw InputError(FMA_FMT(
-                        "Label[{}]: \"detach_property\" is not boolean", ld.name));
+                    THROW_CODE(InputError,
+                        "Label[{}]: \"detach_property\" is not boolean", ld.name);
                 }
                 ld.detach_property = s["detach_property"];
             }
@@ -913,26 +916,26 @@ class ImportConfParser {
             return cds;
         }
         if (!conf["files"].is_array()) {
-            throw InputError("\"files\" is not array");
+            THROW_CODE(InputError, "\"files\" is not array");
         }
         for (auto& item : conf["files"]) {
             if (!item.contains("format") || !item.contains("label") || !item.contains("columns")) {
-                throw InputError(
-                    FMA_FMT(R"(Missing "path" or "format" or "label" or "columns" in json {})",
-                            item.dump(4)));
+                THROW_CODE(InputError,
+                    R"(Missing "path" or "format" or "label" or "columns" in json {})",
+                            item.dump(4));
             }
             if (!item["columns"].is_array()) {
-                throw InputError(FMA_FMT("\"columns\" is not array in json {}", item.dump(4)));
+                THROW_CODE(InputError, "\"columns\" is not array in json {}", item.dump(4));
             }
 
             std::vector<std::string> files;
             if (has_path) {
                 if (!item.contains("path"))
-                    throw InputError(FMA_FMT(R"(Missing "path" in json {})", item.dump(4)));
+                    THROW_CODE(InputError, R"(Missing "path" in json {})", item.dump(4));
                 const std::string& path = item["path"];
                 if (!fs::exists(path)) {
-                    throw InputError(
-                        FMA_FMT("Path [{}] does not exist in json {}", path, item.dump(4)));
+                    THROW_CODE(InputError,
+                        "Path [{}] does not exist in json {}", path, item.dump(4));
                 }
                 if (fs::is_directory(path)) {
                     for (const auto& entry : fs::directory_iterator(path)) {
@@ -958,9 +961,9 @@ class ImportConfParser {
                 }
                 cd.data_format = item["format"];
                 if (cd.data_format != "CSV" && cd.data_format != "JSON") {
-                    throw InputError(
-                        FMA_FMT("\"format\" value error : {}, should be CSV or JSON in json {}",
-                                cd.data_format, item.dump(4)));
+                    THROW_CODE(InputError,
+                        "\"format\" value error : {}, should be CSV or JSON in json {}",
+                                cd.data_format, item.dump(4));
                 }
                 cd.label = item["label"];
                 if (item.contains("header")) {
@@ -969,8 +972,8 @@ class ImportConfParser {
                 cd.is_vertex_file = !(item.contains("SRC_ID") || item.contains("DST_ID"));
                 if (!cd.is_vertex_file) {
                     if (!item.contains("SRC_ID") || !item.contains("DST_ID")) {
-                        throw InputError(
-                            FMA_FMT(R"(Missing "SRC_ID" or "DST_ID" in json {})", item.dump(4)));
+                        THROW_CODE(InputError,
+                            R"(Missing "SRC_ID" or "DST_ID" in json {})", item.dump(4));
                     }
                     cd.edge_src.label = item["SRC_ID"];
                     cd.edge_dst.label = item["DST_ID"];
@@ -1023,10 +1026,10 @@ class ImportConfParser {
         if (!set.empty()) {
             std::string err;
             for (const auto& v : set) err.append(v + ",");
-            throw InputError(
-                FMA_FMT("All fields (expect optional) should be defined, "
+            THROW_CODE(InputError,
+                "All fields (expect optional) should be defined, "
                         "[{}] not defined",
-                        err));
+                        err);
         }
 
         // check edge SRC_ID and DST_ID valid

@@ -27,7 +27,9 @@ set(LGRAPH_CORE_SRC
         core/audit_logger.cpp
         core/data_type.cpp
         core/edge_index.cpp
-        core/field_extractor.cpp
+        core/field_extractor_base.cpp
+        core/field_extractor_v1.cpp
+        core/field_extractor_v2.cpp
         core/full_text_index.cpp
         core/global_config.cpp
         core/graph.cpp
@@ -48,9 +50,13 @@ set(LGRAPH_CORE_SRC
         core/thread_id.cpp
         core/transaction.cpp
         core/vertex_index.cpp
+        core/vector_index.cpp
+        core/faiss_ivf_flat.cpp
+        core/vsag_hnsw.cpp
         core/wal.cpp
         core/lmdb/mdb.c
-        core/lmdb/midl.c)
+        core/lmdb/midl.c
+        core/composite_index.cpp)
 
 set(LGRAPH_DB_SRC
         db/acl.cpp
@@ -73,7 +79,9 @@ set(LGRAPH_API_SRC
         lgraph_api/lgraph_utils.cpp
         lgraph_api/lgraph_vertex_iterator.cpp
         lgraph_api/lgraph_result.cpp
-        lgraph_api/result_element.cpp)
+        lgraph_api/lgraph_exceptions.cpp
+        lgraph_api/result_element.cpp
+        lgraph_api/lgraph_vertex_composite_index_iterator.cpp)
 
 set(TARGET_LGRAPH lgraph)
 
@@ -102,6 +110,7 @@ target_include_directories(${TARGET_LGRAPH} PUBLIC
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_libraries(${TARGET_LGRAPH} PUBLIC
+            vsag
             libgomp.a
             -static-libstdc++
             -static-libgcc
@@ -116,10 +125,15 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             pthread
             rt
             z
+            /opt/OpenBLAS/lib/libopenblas.a
+            faiss
             )
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         target_link_libraries(${TARGET_LGRAPH} PUBLIC
+                vsag
+                /opt/OpenBLAS/lib/libopenblas.a
+                faiss
                 ${Boost_LIBRARIES}
                 omp
                 pthread
@@ -128,6 +142,9 @@ elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
                 ${JAVA_JVM_LIBRARY})
     else ()
         target_link_libraries(${TARGET_LGRAPH} PUBLIC
+                vsag
+                /opt/OpenBLAS/lib/libopenblas.a
+                faiss
                 rt
                 omp
                 pthread

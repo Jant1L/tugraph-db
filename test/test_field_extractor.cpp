@@ -77,14 +77,39 @@ inline lgraph::SpatialCartesian ParseStringToT<lgraph::SpatialCartesian>
 (const std::string &str) {
     return lgraph::SpatialCartesian(str);
 }
-
+template <>
+inline std::vector<float> ParseStringToT<std::vector<float>>(const std::string& str) {
+    std::vector<float> vec;
+    // check if there are only numbers and commas
+    std::regex nonNumbersAndCommas("[^0-9,.]");
+    if (std::regex_search(str, nonNumbersAndCommas)) {
+        THROW_CODE(InputError, "This is not a float vector string");
+    }
+    // Check if the string conforms to the following format : 1.000000,2.000000,3.000000,...
+    std::regex vector("^(?:[-+]?\\d*(?:\\.\\d+)?)(?:,[-+]?\\d*(?:\\.\\d+)?){1,}$");
+    if (!std::regex_match(str, vector)) {
+        THROW_CODE(InputError, "This is not a float vector string");
+    }
+    // check if there are 1.000,,2.000 & 1.000,2.000,
+    if (str.front() == ',' || str.back() == ',' || str.find(",,") != std::string::npos) {
+        THROW_CODE(InputError, "This is not a float vector string");
+    }
+    std::regex pattern("-?[0-9]+\\.?[0-9]*");
+    std::sregex_iterator begin_it(str.begin(), str.end(), pattern), end_it;
+    while (begin_it != end_it) {
+        std::smatch match = *begin_it;
+        vec.push_back(std::stof(match.str()));
+        ++begin_it;
+    }
+    return vec;
+}
 
 template <typename T, typename T2 = int64_t>
 static void CheckParseDataType(FieldType ft, Value& v, const std::string& str_ok,
                                const FieldData& fd_ok, const std::string& str_fail,
                                const FieldData& fd_fail, bool test_out_of_range = false,
                                const T2& out_of_range = T2()) {
-    _detail::FieldExtractor fe_nul(FieldSpec("f", ft, true));
+    _detail::FieldExtractorV1 fe_nul(FieldSpec("f", ft, true));
     fe_nul.ParseAndSet(v, FieldData());
     UT_EXPECT_TRUE(fe_nul.GetIsNull(v));
     fe_nul.ParseAndSet(v, "");
@@ -92,8 +117,8 @@ static void CheckParseDataType(FieldType ft, Value& v, const std::string& str_ok
 
     // cannot be null
     FieldSpec fs("fs", ft, false);
-    _detail::FieldExtractor fe(fs);
-    UT_EXPECT_THROW(fe.ParseAndSet(v, FieldData()), lgraph::FieldCannotBeSetNullException);
+    _detail::FieldExtractorV1 fe(fs);
+    UT_EXPECT_THROW_CODE(fe.ParseAndSet(v, FieldData()), FieldCannotBeSetNull);
 
     // check parse from string
     fe.ParseAndSet(v, str_ok);
@@ -104,14 +129,19 @@ static void CheckParseDataType(FieldType ft, Value& v, const std::string& str_ok
     UT_EXPECT_EQ(UT_FMT("{}", parsed), fe.FieldToString(v));
 
     // check CopyDataRaw
-    _detail::FieldExtractor fe2(fe);
+    _detail::FieldExtractorV1 fe2(fe);
     Value v2(v.Size());
     fe2.CopyDataRaw(v2, v, &fe);
     UT_EXPECT_TRUE(fe2.GetConstRef(v2).AsType<T>() == parsed);
 
     // check parse from FieldData
     fe.ParseAndSet(v, fd_ok);
-    UT_EXPECT_TRUE(FieldData(fe.GetConstRef(v).AsType<T>()) == fd_ok);
+    if (ft != FLOAT_VECTOR) {
+        UT_EXPECT_TRUE(FieldData(fe.GetConstRef(v).AsType<T>()) == fd_ok);
+    } else {
+        UT_EXPECT_TRUE(FieldData(fe.GetConstRef(v).AsType<T>()).AsFloatVector() ==
+                       fd_ok.AsFloatVector());
+    }
 
     // check parse errors
     UT_EXPECT_THROW(fe.ParseAndSet(v, str_fail), lgraph::ParseStringException);
@@ -127,7 +157,7 @@ static void CheckParseDataType(FieldType ft, Value& v, const std::string& str_ok
 static void CheckParseStringAndBlob(FieldType ft, Value& v, const std::string& str_ok,
                                     const FieldData& fd_ok, const std::string& str_fail,
                                     const FieldData& fd_fail) {
-    _detail::FieldExtractor fe_nul(FieldSpec("f", ft, true));
+    _detail::FieldExtractorV1 fe_nul(FieldSpec("f", ft, true));
     if (ft == FieldType::STRING) {
         fe_nul.ParseAndSet(v, FieldData());
         UT_EXPECT_TRUE(fe_nul.GetIsNull(v));
@@ -135,14 +165,14 @@ static void CheckParseStringAndBlob(FieldType ft, Value& v, const std::string& s
         UT_EXPECT_TRUE(!fe_nul.GetIsNull(v));
         UT_EXPECT_TRUE(fe_nul.GetConstRef(v).Empty());
         FieldSpec fs("fs", ft, false);
-        _detail::FieldExtractor fe(fs);
-        UT_EXPECT_THROW(fe.ParseAndSet(v, FieldData()), lgraph::FieldCannotBeSetNullException);
+        _detail::FieldExtractorV1 fe(fs);
+        UT_EXPECT_THROW_CODE(fe.ParseAndSet(v, FieldData()), FieldCannotBeSetNull);
         fe.ParseAndSet(v, str_ok);
         UT_EXPECT_EQ(fe.GetConstRef(v).AsType<std::string>(), str_ok);
         fe.ParseAndSet(v, fd_ok);
         UT_EXPECT_TRUE(fe.GetConstRef(v).AsType<std::string>() == fd_ok.AsString());
-        UT_EXPECT_THROW(fe.ParseAndSet(v, str_fail), lgraph::DataSizeTooLargeException);
-        UT_EXPECT_THROW(fe.ParseAndSet(v, fd_fail), lgraph::ParseIncompatibleTypeException);
+        UT_EXPECT_THROW_CODE(fe.ParseAndSet(v, str_fail), DataSizeTooLarge);
+        UT_EXPECT_THROW_CODE(fe.ParseAndSet(v, fd_fail), ParseIncompatibleType);
     } else {
         std::map<BlobManager::BlobKey, std::string> blob_map;
         BlobManager::BlobKey curr_key = 0;
@@ -158,9 +188,9 @@ static void CheckParseStringAndBlob(FieldType ft, Value& v, const std::string& s
         UT_EXPECT_TRUE(!fe_nul.GetIsNull(v));
         UT_EXPECT_TRUE(fe_nul.GetConstRef(v).Empty());
         FieldSpec fs("fs", ft, false);
-        _detail::FieldExtractor fe(fs);
-        UT_EXPECT_THROW(fe.ParseAndSetBlob(v, FieldData(), blob_add),
-                        lgraph::FieldCannotBeSetNullException);
+        _detail::FieldExtractorV1 fe(fs);
+        UT_EXPECT_THROW_CODE(fe.ParseAndSetBlob(v, FieldData(), blob_add),
+                        FieldCannotBeSetNull);
         fe.ParseAndSetBlob(v, str_ok, blob_add);
         std::string read_str = fe.GetBlobConstRef(v, blob_get).AsType<std::string>();
         std::string decoded = lgraph_api::base64::Decode(str_ok);
@@ -168,8 +198,8 @@ static void CheckParseStringAndBlob(FieldType ft, Value& v, const std::string& s
         fe.ParseAndSetBlob(v, fd_ok, blob_add);
         UT_EXPECT_TRUE(fe.GetBlobConstRef(v, blob_get).AsType<std::string>() == fd_ok.AsBlob());
         UT_EXPECT_THROW(fe.ParseAndSetBlob(v, str_fail, blob_add), lgraph::ParseStringException);
-        UT_EXPECT_THROW(fe.ParseAndSetBlob(v, fd_fail, blob_add),
-                        lgraph::ParseIncompatibleTypeException);
+        UT_EXPECT_THROW_CODE(fe.ParseAndSetBlob(v, fd_fail, blob_add),
+                        ParseIncompatibleType);
     }
 }
 
@@ -180,7 +210,7 @@ TEST_F(TestFieldExtractor, FieldExtractor) {
         value_tmp = Value(1024, 0);  // make sure this buffer is large enough for following tests
 
         FieldSpec fd_nul("FieldSpec", lgraph::FieldType::INT8, true);
-        _detail::FieldExtractor fe_nul_1(fd_nul);
+        _detail::FieldExtractorV1 fe_nul_1(fd_nul);
         fe_nul_1.ParseAndSet(value_tmp, FieldData());
         UT_EXPECT_TRUE(fe_nul_1.GetConstRef(value_tmp).Empty());
 
@@ -260,6 +290,37 @@ TEST_F(TestFieldExtractor, FieldExtractor) {
                            "0000000000000000000000000000000000000000400000000"
                            "0000000400000000000000840000000000000F03F"),
                            "aasd332423d", FieldData(3215), false);
+        // testing float vector
+        std::vector<float> vec1 = {1.111, 2.111, 3.111, 4.111, 5.111};
+        CheckParseDataType<std::vector<float>>(
+            FieldType::FLOAT_VECTOR, value_tmp, "1.111000,2.111000,3.111000,4.111000,5.111000",
+            FieldData::FloatVector(vec1), "abcdefg", FieldData("sad"), false);
+
+        std::vector<float> vec2 = {1111111, 2111111, 3111111, 4111111, 5111111};
+        CheckParseDataType<std::vector<float>>(
+            FieldType::FLOAT_VECTOR, value_tmp, "1111111,2111111,3111111,4111111,5111111",
+            FieldData::FloatVector(vec2), "abcdefg", FieldData("sad"), false);
+
+        std::vector<float> vec3 = {1111, 2111, 3111, 4111, 5111};
+        CheckParseDataType<std::vector<float>>(
+            FieldType::FLOAT_VECTOR, value_tmp, "1111.000,2111.000,3111.000,4111.000,5111.000",
+            FieldData::FloatVector(vec3), "abcdefg", FieldData("sad"), false);
+
+        std::vector<float> vec4 = {111.1111, 222.2222, 333.3333};
+        CheckParseDataType<std::vector<float>>(
+            FieldType::FLOAT_VECTOR, value_tmp, "111.1111,222.2222,333.3333",
+            FieldData::FloatVector(vec4), "abcdefg", FieldData("sad"), false);
+
+        std::vector<float> vec5 = {0.111111, 0.222222, 0.3333333};
+        CheckParseDataType<std::vector<float>>(
+            FieldType::FLOAT_VECTOR, value_tmp, "0.111111,0.222222,0.3333333",
+            FieldData::FloatVector(vec5), "abcdefg", FieldData("sad"), false);
+
+        std::vector<float> vec6 = {111111.0, 222222.0, 333333.0};
+        CheckParseDataType<std::vector<float>>(
+            FieldType::FLOAT_VECTOR, value_tmp, "111111.0,222222.0,333333.0",
+            FieldData::FloatVector(vec6), "abcdefg", FieldData("sad"), false);
+
         CheckParseStringAndBlob(FieldType::STRING, value_tmp, "this is a string",
                                 FieldData("another string"),
                                 std::string(_detail::MAX_STRING_SIZE + 1, 'a'),

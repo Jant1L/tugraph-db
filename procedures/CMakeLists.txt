@@ -31,12 +31,28 @@ function(add_embed2 APP)
 endfunction()
 
 function(add_extension APP)
-    add_cython_target(${APP} algo_cython/${APP}.py CXX)
+    add_cython_target(${APP} algo_cython/${APP}_procedure.py CXX)
     add_library(${APP} MODULE ${APP})
     python_extension_module(${APP})
     target_link_libraries(${APP} ${Boost_LIBRARIES} lgraph libgomp.a dl)
     set_target_properties( ${APP} PROPERTIES
             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/algo")
+endfunction()
+
+function(add_v2procedure APP)
+    add_library(${APP}_v2 SHARED algo_cpp/${APP}_core.cpp algo_cpp/${APP}_procedure_v2.cpp)
+    target_link_libraries(${APP}_v2 ${Boost_LIBRARIES} lgraph libgomp.a crypto)
+    set_target_properties( ${APP}_v2 PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/algo")
+endfunction()
+
+function(add_standalone_from_community APP)
+    add_executable(${APP}_standalone community/${APP}_core.cpp community/${APP}_standalone.cpp ${LGRAPH_API_SRC})
+    target_link_libraries(${APP}_standalone ${Boost_LIBRARIES} libstdc++fs.a libgomp.a dl)
+    set_target_properties( ${APP}_standalone PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/algo")
+    target_include_directories(${APP}_standalone PUBLIC ${CMAKE_SOURCE_DIR}/include
+                                                        ${CMAKE_SOURCE_DIR}/src)
 endfunction()
 
 add_standalone(apsp)
@@ -74,6 +90,7 @@ add_standalone(wlpa)
 add_standalone(subgraph_isomorphism)
 add_standalone(sybilrank)
 add_standalone(leiden)
+add_standalone_from_community(khop)
 
 add_embed(apsp)
 add_embed(bfs)
@@ -126,3 +143,10 @@ add_extension(sssp)
 add_extension(wcc)
 add_extension(lcc)
 add_extension(lpa)
+
+add_v2procedure(bfs)
+add_v2procedure(lcc)
+add_v2procedure(wcc)
+add_v2procedure(sssp)
+add_v2procedure(lpa)
+add_v2procedure(pagerank)

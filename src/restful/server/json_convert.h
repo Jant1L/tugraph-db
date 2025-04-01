@@ -35,7 +35,7 @@
 #include "core/global_config.h"
 #include "core/task_tracker.h"
 #include "core/schema.h"
-#include "core/field_extractor.h"
+#include "core/field_extractor_base.h"
 #include "db/acl.h"
 #include "plugin/plugin_desc.h"
 #include "server/state_machine.h"
@@ -65,6 +65,7 @@ static const utility::string_t AUTH_METHOD = _TU("auth_method");
 static const utility::string_t BEGIN_TIME = _TU("begin_time");
 static const utility::string_t BRANCH = _TU("git_branch");
 static const utility::string_t CODE = _TU("code_base64");
+static const utility::string_t FILENAMES = _TU("file_name");
 static const utility::string_t VERSION = _TU("version");
 static const utility::string_t CODE_TYPE = _TU("code_type");
 static const utility::string_t COMMIT = _TU("git_commit");
@@ -414,7 +415,7 @@ inline web::json::value ValueToJson(const FieldData& fd) {
                 case ::lgraph_api::SRID::CARTESIAN:
                     return web::json::value::string(_TU(PointCartesian(*fd.data.buf).ToString()));
                 default:
-                    throw lgraph::InputError("unsupportted spatial srid");
+                    THROW_CODE(InputError, "unsupportted spatial srid");
             }
         }
     case FieldType::LINESTRING:
@@ -427,7 +428,7 @@ inline web::json::value ValueToJson(const FieldData& fd) {
                     return web::json::value::string(
                         _TU(LineStringCartesian(*fd.data.buf).ToString()));
                 default:
-                    throw lgraph::InputError("unsupportted spatial srid");
+                    THROW_CODE(InputError, "unsupportted spatial srid");
             }
         }
     case FieldType::POLYGON:
@@ -439,7 +440,7 @@ inline web::json::value ValueToJson(const FieldData& fd) {
                 case ::lgraph_api::SRID::CARTESIAN:
                     return web::json::value::string(_TU(PolygonCartesian(*fd.data.buf).ToString()));
                 default:
-                    throw lgraph::InputError("unsupportted spatial srid");
+                    THROW_CODE(InputError, "unsupportted spatial srid");
             }
         }
     case FieldType::SPATIAL:
@@ -451,8 +452,16 @@ inline web::json::value ValueToJson(const FieldData& fd) {
                 case ::lgraph_api::SRID::CARTESIAN:
                     return web::json::value::string(_TU(SpatialCartesian(*fd.data.buf).ToString()));
                 default:
-                    throw lgraph::InputError("unsupportted spatial srid");
+                    THROW_CODE(InputError, "unsupportted spatial srid");
             }
+        }
+    case FieldType::FLOAT_VECTOR:
+        {
+            std::vector<web::json::value> json_vec;
+            for (float num : *fd.data.vp) {
+                json_vec.push_back(web::json::value::number(num));
+            }
+            return web::json::value::array(json_vec);
         }
     }
     FMA_DBG_ASSERT(false);  // unhandled FieldData type
@@ -597,16 +606,17 @@ inline web::json::value ValueToJson(const std::vector<std::pair<std::string, std
     return arr;
 }
 
-inline web::json::value ValueToJson(const std::vector<lgraph::_detail::FieldExtractor>& fields) {
+inline web::json::value ValueToJson(
+    const std::vector<lgraph::_detail::FieldExtractorBase*> fields) {
     auto arr = web::json::value::array();
     for (int idx = 0; idx < (int)fields.size(); ++idx) {
         web::json::value js;
-        js[_TU("name")] = ValueToJson(fields[idx].GetFieldSpec().name);
-        js[_TU("type")] = ValueToJson(to_string(fields[idx].GetFieldSpec().type));
-        js[_TU("optional")] = ValueToJson(fields[idx].GetFieldSpec().optional);
-        if (fields[idx].GetVertexIndex()) {
+        js[_TU("name")] = ValueToJson(fields[idx]->GetFieldSpec().name);
+        js[_TU("type")] = ValueToJson(to_string(fields[idx]->GetFieldSpec().type));
+        js[_TU("optional")] = ValueToJson(fields[idx]->GetFieldSpec().optional);
+        if (fields[idx]->GetVertexIndex()) {
             js[_TU("index")] = ValueToJson(true);
-            switch (fields[idx].GetVertexIndex()->GetType()) {
+            switch (fields[idx]->GetVertexIndex()->GetType()) {
             case IndexType::NonuniqueIndex:
                 js[_TU("unique")] = ValueToJson(false);
                 break;
@@ -617,12 +627,9 @@ inline web::json::value ValueToJson(const std::vector<lgraph::_detail::FieldExtr
                 js[_TU("unique")] = ValueToJson(false);
                 break;
             }
-        } else {
-            js[_TU("index")] = ValueToJson(false);
-        }
-        if (fields[idx].GetEdgeIndex()) {\
+        } else if (fields[idx]->GetEdgeIndex()) {
             js[_TU("index")] = ValueToJson(true);
-            switch (fields[idx].GetEdgeIndex()->GetType()) {
+            switch (fields[idx]->GetEdgeIndex()->GetType()) {
             case IndexType::NonuniqueIndex:
                 js[_TU("unique")] = ValueToJson(false);
                 js[_TU("pair_unique")] = ValueToJson(false);

@@ -711,7 +711,11 @@ class OlapBase {
         if (this->edge_direction_policy_ == DUAL_DIRECTION) {
             auto worker = Worker::SharedWorker();
             worker->Delegate([&]() {
-#pragma omp parallel for default(none)
+#if USING_CENTOS9
+    #pragma omp parallel for default(none) firstprivate(this)
+#else
+    #pragma omp parallel for default(none)
+#endif
                 for (size_t ei = 0; ei < this->num_edges_; ei++) {
                     size_t src = this->edge_list_[ei].src;
                     size_t dst = this->edge_list_[ei].dst;
@@ -736,8 +740,11 @@ class OlapBase {
                         this->in_index_[vi + 1] += this->in_index_[vi];
                     }
                 }
-
-#pragma omp parallel for
+#if USING_CENTOS9
+    #pragma omp parallel for firstprivate(this)
+#else
+    #pragma omp parallel for
+#endif
                 for (size_t ei = 0; ei < this->num_edges_; ei++) {
                     size_t src = this->edge_list_[ei].src;
                     size_t dst = this->edge_list_[ei].dst;
@@ -769,7 +776,11 @@ class OlapBase {
         } else {
             auto worker = Worker::SharedWorker();
             worker->Delegate([&]() {
-#pragma omp parallel for default(none)
+#if USING_CENTOS9
+    #pragma omp parallel for default(none) firstprivate(this)
+#else
+    #pragma omp parallel for default(none)
+#endif
                 for (size_t ei = 0; ei < this->num_edges_; ei++) {
                     size_t src = this->edge_list_[ei].src;
                     size_t dst = this->edge_list_[ei].dst;
@@ -786,7 +797,11 @@ class OlapBase {
                     this->out_index_[vi + 1] += this->out_index_[vi];
                 }
 
-#pragma omp parallel for
+#if USING_CENTOS9
+    #pragma omp parallel for firstprivate(this)
+#else
+    #pragma omp parallel for
+#endif
                 for (size_t ei = 0; ei < this->num_edges_; ei++) {
                     size_t src = this->edge_list_[ei].src;
                     size_t dst = this->edge_list_[ei].dst;
@@ -978,7 +993,6 @@ class OlapBase {
      * @param   vertices     The vertex id (in the Graph) to lock/unlock.
      *
      */
-
     void set_num_vertices(size_t vertices) {
         if (this->num_vertices_ == 0) {
             this->num_vertices_ = vertices;
@@ -1041,6 +1055,7 @@ class OlapBase {
                 num_threads = omp_get_num_threads();
             }
         };
+        // TODO(niyan.zy): move ThreadState to Construct
         ThreadState **thread_state;
         thread_state = new ThreadState *[num_threads];
         for (int t_i = 0; t_i < num_threads; t_i++) {
@@ -1166,6 +1181,7 @@ class OlapBase {
                 num_threads = omp_get_num_threads();
             }
         };
+        // TODO(niyan.zy): move ThreadState to Construct
         ThreadState **thread_state;
         thread_state = new ThreadState *[num_threads];
         for (int t_i = 0; t_i < num_threads; t_i++) {

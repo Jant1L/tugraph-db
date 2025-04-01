@@ -18,9 +18,11 @@
 
 #include <memory>
 #include <stack>
+#include "arithmetic/arithmetic_expression.h"
 #include "db/galaxy.h"
 
 #include "execution_plan/ops/op.h"
+#include "graph/common.h"
 #include "graph/graph.h"
 #include "cypher/cypher_exception.h"
 #include "ops/ops.h"
@@ -29,6 +31,7 @@
 #include "procedure/procedure.h"
 #include "cypher/execution_plan/validation/graph_name_checker.h"
 #include "cypher/execution_plan/execution_plan.h"
+#include "server/bolt_session.h"
 
 namespace cypher {
 using namespace parser;
@@ -70,7 +73,7 @@ static void BuildQueryGraph(const QueryPart &part, PatternGraph &graph) {
                 auto dst_nid = graph.AddNode("", dst_alias, Node::ARGUMENT);
                 graph.AddRelationship(std::set<std::string>{}, src_nid, dst_nid,
                                       parser::LinkDirection::UNKNOWN, a.first,
-                                      Relationship::ARGUMENT);
+                                      Relationship::ARGUMENT, {}, {});
                 auto &src_node = graph.GetNode(src_nid);
                 auto &dst_node = graph.GetNode(dst_nid);
                 src_node.Visited() = true;
@@ -151,6 +154,10 @@ static void BuildResultSetInfo(const QueryPart &stmt, ResultInfo &result_info) {
         for (auto &item : ret_items) {
             auto &e = std::get<0>(item);
             auto &alias = std::get<1>(item);
+            bool isHidden = std::get<2>(item);
+            if (isHidden) {
+                continue;
+            }
             ArithExprNode ae(e, stmt.symbol_table);
             bool aggregate = ae.ContainsAggregation();
             if (aggregate) result_info.aggregated = true;
@@ -241,6 +248,11 @@ static void BuildResultSetInfo(const QueryPart &stmt, ResultInfo &result_info) {
                 }
             }
         }
+    } else if (!stmt.create_clause.empty() || stmt.delete_clause ||
+               !stmt.merge_clause.empty() || !stmt.set_clause.empty()) {
+        CYPHER_THROW_ASSERT(result_info.header.colums.empty());
+        result_info.header.colums.emplace_back(
+            "<SUMMARY>", "", false, lgraph_api::LGraphType::STRING);
     }
 }
 
@@ -320,7 +332,7 @@ void ExecutionPlan::_AddScanOp(const parser::QueryPart &part, const SymbolTable 
         }
     }
     if (!has_arg) {
-        // 符号表中没有type为argument的
+        // no argument type in symbol table
         if (pf.type == Property::VALUE || pf.type == Property::PARAMETER) {
             /* use index when possible. weak index lookup if label absent */
             scan_op = new NodeIndexSeek(node, sym_tab);
@@ -343,7 +355,7 @@ void ExecutionPlan::_AddScanOp(const parser::QueryPart &part, const SymbolTable 
         }
         ops.emplace_back(scan_op);
     } else {
-        // 符号表有type为argument的
+        // argument type exists in symbol table
         if (it->second.scope == SymbolNode::ARGUMENT) {
             if (skip_arg_op) return;
             scan_op = new Argument(sym_tab);
@@ -355,6 +367,7 @@ void ExecutionPlan::_AddScanOp(const parser::QueryPart &part, const SymbolTable 
         } else if (pf.type == Property::VARIABLE) {
             scan_op = new NodeIndexSeekDynamic(node, sym_tab);
             /* WITH 'sth' AS x MATCH (n {name:x}) RETURN n  */
+            /* WITH {a: 'sth'} AS x MATCH (n {name:x.a}) RETURN n  */
             auto i = sym_tab->symbols.find(pf.value_alias);
             if (i == sym_tab->symbols.end())
                 throw lgraph::CypherException("Unknown variable: " + pf.value_alias);
@@ -504,6 +517,7 @@ void ExecutionPlan::_BuildExpandOps(const parser::QueryPart &part, PatternGraph 
             start_hints.emplace_back(hint.substr(0, hint.length() - 2));
         }
     }
+    // TODO(botu.wzy): A better implementation of picking the starting node
     std::vector<NodeID> start_nodes;
     /* The argument nodes are specific, we add them into start nodes first.
      * If there are both specific node & argument in pattern, prefer the former.
@@ -529,6 +543,17 @@ void ExecutionPlan::_BuildExpandOps(const parser::QueryPart &part, PatternGraph 
     for (auto &a : args_ordered) start_nodes.emplace_back(a.second);
     for (auto &s : start_hints) start_nodes.emplace_back(pattern_graph.GetNode(s).ID());
     for (auto &n : pattern_graph.GetNodes()) {
+        if (n.derivation_ == Node::MATCHED && !n.Label().empty() &&
+            n.Prop().type == Property::VALUE) {
+            start_nodes.emplace_back(n.ID());
+        }
+    }
+    for (auto &n : pattern_graph.GetNodes()) {
+        if (n.derivation_ == Node::MATCHED && !n.Label().empty()) {
+            start_nodes.emplace_back(n.ID());
+        }
+    }
+    for (auto &n : pattern_graph.GetNodes()) {
         if (n.derivation_ != Node::CREATED && n.derivation_ != Node::MERGED)
             start_nodes.emplace_back(n.ID());
     }
@@ -546,7 +571,7 @@ void ExecutionPlan::_BuildExpandOps(const parser::QueryPart &part, PatternGraph 
             auto &relp = pattern_graph.GetRelationship(std::get<1>(step));
             auto &neighbor = pattern_graph.GetNode(std::get<2>(step));
             if (relp.Empty() && neighbor.Empty()) {
-                // 邻居节点和关系都为空，证明是悬挂点 hanging为true
+                // neighbor and relationship are both empty, it's a hanging node
                 /* Node doesn't have any incoming nor outgoing edges,
                  * this is an hanging node "()", create a scan operation. */
                 CYPHER_THROW_ASSERT(stream.size() == 1);
@@ -560,10 +585,10 @@ void ExecutionPlan::_BuildExpandOps(const parser::QueryPart &part, PatternGraph 
                     it->second.scope == SymbolNode::ARGUMENT) {
                     // the previous argument op added
                     skip_hanging_argument_op =
-                        true;  // 避免MATCH (a),(b) WITH a, b a,b会导致生成多个argument
+                        true;  // avoid `MATCH (a),(b) WITH a, b a,b` generates multiple arguments
                 }
             } else if (relp.VarLen()) {
-                // 邻居不为空，进行expand
+                // expand when neighbor is not null
                 OpBase *expand_op = new VarLenExpand(&pattern_graph, &start, &neighbor, &relp);
                 expand_ops.emplace_back(expand_op);
             } else {
@@ -580,12 +605,16 @@ void ExecutionPlan::_BuildExpandOps(const parser::QueryPart &part, PatternGraph 
                     // TODO(anyone) use record
                     ae2.SetOperand(ArithOperandNode::AR_OPERAND_PARAMETER,
                                    cypher::FieldData(lgraph::FieldData(pf.value_alias)));
+                } else if (pf.type == Property::VARIABLE) {
+                    ae2.SetOperandVariable(ArithOperandNode::AR_OPERAND_VARIABLE,
+                                        pf.hasMapFieldName, pf.value_alias, pf.map_field_name);
                 } else {
                     ae2.SetOperand(ArithOperandNode::AR_OPERAND_CONSTANT,
                                    cypher::FieldData(pf.value));
                 }
                 std::shared_ptr<lgraph::Filter> filter =
-                    std::make_shared<lgraph::RangeFilter>(lgraph::CompareOp::LBR_EQ, ae1, ae2);
+                    std::make_shared<lgraph::RangeFilter>(lgraph::CompareOp::LBR_EQ, ae1, ae2,
+                                                        &pattern_graph.symbol_table);
                 OpBase *filter_op = new OpFilter(filter);
                 expand_ops.emplace_back(filter_op);
             }
@@ -601,7 +630,7 @@ void ExecutionPlan::_BuildExpandOps(const parser::QueryPart &part, PatternGraph 
         /* Locates expand all operations which do not have a child operation,
          * And adds a scan operation as a new child. */
         if (!hanging) {
-            // 如果不是悬挂点，就补一个scanop
+            // add a scan op when it is not a hanging node
             CYPHER_THROW_ASSERT(!stream.empty());
             std::vector<OpBase *> scan_ops;
             auto &start_node = pattern_graph.GetNode(std::get<0>(stream[0]));
@@ -628,8 +657,9 @@ void ExecutionPlan::_BuildExpandOps(const parser::QueryPart &part, PatternGraph 
         }
     }  // end for streams
     if (!traversal_root) {
-        // 如果traversal_root为空，则判断stream里面是否是悬挂点，且为argument，如果是这种情况_AddScanOp就会跳过，不产生任何op
-        // 1. 判断符号表中是否有argument
+        // judge if nodes in stream are dangling and of type ARGUMENT when traversal_root is null
+        // _AddScanOp will be skipped in this case. No op will be generated
+        // 1. judge if ARGUMENT type exists in symbol table
         bool has_arg = false;
         for (auto &a : pattern_graph.symbol_table.symbols) {
             if (a.second.scope == SymbolNode::ARGUMENT) {
@@ -638,23 +668,22 @@ void ExecutionPlan::_BuildExpandOps(const parser::QueryPart &part, PatternGraph 
             }
         }
         if (!has_arg) CYPHER_TODO();
-        // 2. 判断是否都是悬挂点
-        // 所有stream都是悬挂点
+        // 2. judge if all nodes are dangiling
+        // all streams are dangling nodes
         for (auto &stream : expand_streams) {
             if (stream.size() != 1 ||
                 !pattern_graph.GetRelationship(std::get<1>(stream[0])).Empty()) {
                 CYPHER_TODO();
             }
         }
-        // 没有argument 或 整个流不是悬挂点，就抛出异常
-        // 符合条件的话，就在这里追加一个argument
+        // throw exception when argument or the stream is not dangling node
+        // add one more argument when condition is true
         traversal_root = new Argument(&pattern_graph.symbol_table);
     }
-    /* 调整树结构，使得笛卡尔积下的argument放到scan下
-     * 删掉笛卡尔积，即children[1]作为根节点
-     * 并且更改scan为dynamic
-     * 目前只处理CARTESIAN_PRODUCT下只有两个孩子的情况
-     * 例如：
+    /* Restructure the tree to move the argument down
+     * 1. remove cartesian product and emplace children[1] as the root
+     * 2. update the scan op to the dynamic one
+     * Only works when there are only two children of CARTESIAN_PRODUCT. E.g,
      * before：
      * Cartesian Product
             Argument [c,f]
@@ -1285,6 +1314,46 @@ void ExecutionPlan::Build(const std::vector<parser::SglQuery> &stmt, parser::Cmd
     pass_manager.ExecutePasses();
 }
 
+void ExecutionPlan::PreValidate(
+    cypher::RTContext *ctx,
+    const std::unordered_map<std::string, std::set<std::string>>& node,
+    const std::unordered_map<std::string, std::set<std::string>>& edge) {
+    if (node.empty() && edge.empty()) {
+        return;
+    }
+    if (ctx->graph_.empty()) {
+        return;
+    }
+    auto graph = ctx->galaxy_->OpenGraph(ctx->user_, ctx->graph_);
+    auto txn = graph.CreateReadTxn();
+    const auto& si = txn.GetSchemaInfo();
+    for (const auto& pair : node) {
+        auto s = si.v_schema_manager.GetSchema(pair.first);
+        if (!s) {
+            THROW_CODE(CypherException, "No such vertex label: {}", pair.first);
+        }
+        for (const auto& name : pair.second) {
+            size_t fid;
+            if (!s->TryGetFieldId(name, fid)) {
+                THROW_CODE(CypherException, "No such vertex property: {}.{}", pair.first, name);
+            }
+        }
+    }
+    for (const auto& pair : edge) {
+        auto s = si.e_schema_manager.GetSchema(pair.first);
+        if (!s) {
+            THROW_CODE(CypherException, "No such edge label: {}", pair.first);
+        }
+        for (const auto& name : pair.second) {
+            size_t fid;
+            if (!s->TryGetFieldId(name, fid)) {
+                THROW_CODE(CypherException, "No such edge property: {}.{}", pair.first, name);
+            }
+        }
+    }
+    txn.Abort();
+}
+
 void ExecutionPlan::Validate(cypher::RTContext *ctx) {
     // todo(kehuang): Add validation manager here.
     GraphNameChecker checker(_root, ctx);
@@ -1354,6 +1423,17 @@ int ExecutionPlan::Execute(RTContext *ctx) {
     }
     ctx->result_ = std::make_unique<lgraph_api::Result>(lgraph_api::Result(header));
 
+    if (ctx->bolt_conn_) {
+        std::unordered_map<std::string, std::any> meta;
+        meta["fields"] = ctx->result_->BoltHeader();
+        bolt::PackStream ps;
+        ps.AppendSuccess(meta);
+        ctx->bolt_conn_->PostResponse(std::move(ps.MutableBuffer()));
+        auto session = (bolt::BoltSession*)ctx->bolt_conn_->GetContext();
+        session->state = bolt::SessionState::STREAMING;
+        ctx->result_->MarkPythonDriver(session->python_driver);
+    }
+
     try {
         OpBase::OpResult res;
         do {
@@ -1398,20 +1478,16 @@ int ExecutionPlan::Execute(RTContext *ctx) {
 const ResultInfo &ExecutionPlan::GetResultInfo() const { return _result_info; }
 
 std::string ExecutionPlan::DumpPlan(int indent, bool statistics) const {
-    std::string s = statistics ? "Profile statistics:\n" : "Execution Plan:\n";
+    std::string s;
+    s.append(FMA_FMT("ReadOnly:{}\n", ReadOnly()));
+    s.append(statistics ? "Profile statistics:\n" : "Execution Plan:\n");
     OpBase::DumpStream(_root, indent, statistics, s);
-    if (LoggerManager::GetInstance().GetLevel() >= severity_level::DEBUG) {
-        LOG_DEBUG() << s;
-    }
     return s;
 }
 
 std::string ExecutionPlan::DumpGraph() const {
     std::string s;
     for (auto &g : _pattern_graphs) s.append(g.DumpGraph());
-    if (LoggerManager::GetInstance().GetLevel() >= severity_level::DEBUG) {
-        LOG_DEBUG() << s;
-    }
     return s;
 }
 }  // namespace cypher

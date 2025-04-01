@@ -74,7 +74,7 @@ class SchemaManager {
             BinaryBuffer buf(v.Data(), v.Size());
             schemas_[id].SetStoreLabelInRecord(label_in_record_);
             if (!BinaryRead(buf, schemas_[id])) {
-                throw ::lgraph::InternalError("Invalid schema read from DB.");
+                THROW_CODE(InternalError, "Invalid schema read from DB.");
             }
             it->Next();
         }
@@ -173,13 +173,12 @@ class SchemaManager {
      * \exception   ::lgraph::SchemaException   Thrown when a Schema error condition occurs.
      *
      * \param [in,out]  txn         The transaction.
+     * \param           is_vertex   True if this is vertex label, otherwise it is edge label.
      * \param           label       The label.
      * \param           n_fields    The fields.
      * \param           fields      The fields in the labeled data.
-     * \param           primary_field The vertex primary property,
-     *                  must be set when is_vertex is true
-     * \param           edge_constraints The edge constraints, can
-     *                  be set when is_vertex is false
+     * \param           options     Cast to VertexOptions when is_vertex is true, else cast to
+     * EdgeOptions.
      *
      * \return  True if it succeeds, false if the label already exists. Throws exception on error.
      */
@@ -200,8 +199,8 @@ class SchemaManager {
             schemas_.emplace_back(label_in_record_);
             ls = &schemas_.back();
             if (schemas_.size() > std::numeric_limits<LabelId>::max()) {
-                throw ::lgraph::InternalError(fma_common::StringFormatter::Format(
-                    "Number of labels exceeds limit: {}.\n", std::numeric_limits<LabelId>::max()));
+                THROW_CODE(InternalError,
+                    "Number of labels exceeds limit: {}.\n", std::numeric_limits<LabelId>::max());
             }
             ls->SetLabelId((LabelId)(schemas_.size() - 1));
         }
@@ -217,6 +216,7 @@ class SchemaManager {
             temporal = dynamic_cast<const EdgeOptions&>(options).temporal_field;
             temporal_order = dynamic_cast<const EdgeOptions&>(options).temporal_field_order;
         }
+        ls->SetFastAlterSchema(options.fast_alter_schema);
         ls->SetSchema(is_vertex, n_fields, fields, primary, temporal, temporal_order,
                       edge_constraints);
         ls->SetLabel(label);
@@ -267,8 +267,7 @@ class SchemaManager {
     LabelId AlterLabel(KvTransaction& txn, const std::string& label, const Schema& new_schema) {
         auto it = name_to_idx_.find(label);
         if (it == name_to_idx_.end())
-            throw InputError(
-                fma_common::StringFormatter::Format("Label [{}] does not exist.", label));
+            THROW_CODE(InputError, "Label [{}] does not exist.", label);
         size_t idx = it->second;
         Schema* news = &schemas_[idx];
         *news = new_schema;
@@ -290,8 +289,7 @@ class SchemaManager {
     LabelId GetLabelId(const std::string& label) const {
         auto it = name_to_idx_.find(label);
         if (it == name_to_idx_.end()) {
-            throw InputError(
-                fma_common::StringFormatter::Format("Label \"{}\" does not exist.", label));
+            THROW_CODE(InputError, "Label \"{}\" does not exist.", label);
         }
         return static_cast<LabelId>(it->second);
     }
@@ -300,11 +298,11 @@ class SchemaManager {
         return ::lgraph::_detail::UnalignedGet<LabelId>(record.Data());
     }
 
-    const _detail::FieldExtractor* GetExtractor(const Value& record,
+    const _detail::FieldExtractorV1* GetExtractor(const Value& record,
                                                 const std::string& field) const {
         auto ls = GetSchema(record);
         if (!ls) return nullptr;
-        return ls->GetFieldExtractor(field);
+        return ls->GetFieldExtractorV1(ls->GetFieldExtractor(field));
     }
 
     const Schema* GetSchema(const std::string& label) const {
@@ -379,6 +377,16 @@ class SchemaManager {
         return indexes;
     }
 
+    std::vector<CompositeIndexSpec> ListVertexCompositeIndexes() const {
+        std::vector<CompositeIndexSpec> indexes;
+        for (auto& schema : schemas_) {
+            for (auto &spec : schema.GetCompositeIndexSpec()) {
+                indexes.push_back(spec);
+            }
+        }
+        return indexes;
+    }
+
     std::vector<IndexSpec> ListEdgeIndexes() const {
         std::vector<IndexSpec> indexes;
         for (auto& schema : schemas_) {
@@ -401,8 +409,7 @@ class SchemaManager {
     std::vector<IndexSpec> ListIndexByLabel(const T& label) const {
         const Schema* schema = GetSchema(label);
         if (!schema)
-            throw InputError(
-                fma_common::StringFormatter::Format("Label [{}] does not exist.", label));
+            THROW_CODE(InputError, "Label [{}] does not exist.", label);
         std::vector<IndexSpec> indexes;
         auto fids = schema->GetIndexedFields();
         for (auto& fid : fids) {
@@ -422,8 +429,7 @@ class SchemaManager {
     std::vector<IndexSpec> ListEdgeIndexByLabel(const T& label) const {
         const Schema* schema = GetSchema(label);
         if (!schema)
-            throw InputError(
-                fma_common::StringFormatter::Format("Label [{}] does not exist.", label));
+            THROW_CODE(InputError, "Label [{}] does not exist.", label);
         std::vector<IndexSpec> indexes;
         auto fids = schema->GetIndexedFields();
         for (auto& fid : fids) {
@@ -437,6 +443,14 @@ class SchemaManager {
             indexes.push_back(std::move(is));
         }
         return indexes;
+    }
+
+    std::vector<CompositeIndexSpec> ListVertexCompositeIndexByLabel(
+                                    const std::string &label) const {
+        const Schema* schema = GetSchema(label);
+        if (!schema)
+            THROW_CODE(InputError, "Label [{}] does not exist.", label);
+        return schema->GetCompositeIndexSpec();
     }
 
  private:

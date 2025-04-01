@@ -31,11 +31,11 @@ bool ShouldKillThisTask(ThreadContextPtr ctx) {
 
 #define THROW_IF_RO()                                        \
     if (read_only_)                                          \
-        throw WriteNotAllowedError(                          \
+        THROW_CODE(WriteNotAllowed,                          \
             "Write transaction is not allowed in read-only " \
             "DB.");
 #define THROW_IF_INVALID() \
-    if (!db_) throw InvalidGraphDBError();
+    if (!db_) THROW_CODE(InvalidGraphDB);
 
 GraphDB::GraphDB(lgraph::AccessControlledDB* db_with_access_control, bool read_only, bool owns_db)
     : db_(db_with_access_control), should_delete_db_(owns_db), read_only_(read_only) {}
@@ -200,6 +200,24 @@ bool GraphDB::AddEdgeIndex(const std::string& label, const std::string& field, I
     return db_->AddEdgeIndex(label, field, type);
 }
 
+bool GraphDB::AddVertexCompositeIndex(const std::string& label,
+                                      const std::vector<std::string>& fields,
+                                      lgraph_api::CompositeIndexType type) {
+    THROW_IF_INVALID();
+    THROW_IF_RO();
+    return db_->AddVertexCompositeIndex(label, fields, type);
+}
+
+bool GraphDB::AddVectorIndex(bool is_vertex, const std::string& label, const std::string& field,
+                             const std::string& index_type, int vec_dimension,
+                             const std::string& distance_type,
+                             std::vector<int>& index_spec) {
+    THROW_IF_INVALID();
+    THROW_IF_RO();
+    return db_->AddVectorIndex(is_vertex, label, field, index_type, vec_dimension,
+                               distance_type, index_spec);
+}
+
 bool GraphDB::IsVertexIndexed(const std::string& label, const std::string& field) {
     THROW_IF_INVALID();
     return db_->IsVertexIndexed(label, field);
@@ -214,6 +232,27 @@ bool GraphDB::DeleteVertexIndex(const std::string& label, const std::string& fie
     THROW_IF_INVALID();
     THROW_IF_RO();
     return db_->DeleteVertexIndex(label, field);
+}
+
+bool GraphDB::DeleteVertexCompositeIndex(const std::string& label,
+                                         const std::vector<std::string>& fields) {
+    THROW_IF_INVALID();
+    THROW_IF_RO();
+    return db_->DeleteVertexCompositeIndex(label, fields);
+}
+
+bool GraphDB::IsVertexCompositeIndexed(const std::string& label,
+                                       const std::vector<std::string>& field) {
+    THROW_IF_INVALID();
+    THROW_IF_RO();
+    return db_->IsVertexCompositeIndexed(label, field);
+}
+
+bool GraphDB::DeleteVectorIndex(
+    bool is_vertex, const std::string& label, const std::string& field) {
+    THROW_IF_INVALID();
+    THROW_IF_RO();
+    return db_->DeleteVectorIndex(is_vertex, label, field);
 }
 
 bool GraphDB::DeleteEdgeIndex(const std::string& label, const std::string& field) {

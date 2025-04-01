@@ -5,10 +5,10 @@ import liblgraph_client_python
 
 log = logging.getLogger(__name__)
 
-SERVEROPT = {"cmd":"./lgraph_server -c lgraph_standalone.json --directory ./testdb --port 7072 --rpc_port 9092",
+SERVEROPT = {"cmd":"./lgraph_server -c lgraph_standalone.json --directory ./testdb --port 7072 --rpc_port 9092 --enable_plugin 1",
              "cleanup_dir":["./testdb"]}
 
-SERVEROPT_1 = {"cmd":"./lgraph_server -c lgraph_standalone.json --directory ./testdb --port 7072 --rpc_port 9092",
+SERVEROPT_1 = {"cmd":"./lgraph_server -c lgraph_standalone.json --directory ./testdb --port 7072 --rpc_port 9092 --enable_plugin 1",
              "cleanup_dir":[]}
 
 CLIENTOPT = {"host":"127.0.0.1:9092", "user":"admin", "password":"73@TuGraph"}
@@ -19,6 +19,10 @@ IMPORTOPT = {"cmd":"./lgraph_import --config_file ./data/yago/yago.conf --dir ./
 BUILDOPT = {"cmd":["g++ -fno-gnu-unique -fPIC -g --std=c++17 -I ../../include -I ../../deps/install/include -rdynamic -O3 -fopenmp -DNDEBUG -o ./scan_graph.so ../../test/test_procedures/scan_graph.cpp ./liblgraph.so -shared",
                        "g++ -fno-gnu-unique -fPIC -g --std=c++17 -I ../../include -I ../../deps/install/include -rdynamic -O3 -fopenmp -DNDEBUG -o ./sortstr.so ../../test/test_procedures/sortstr.cpp ./liblgraph.so -shared"],
                 "so_name":["./scan_graph.so", "./sortstr.so"]}
+
+BUILDV2OPT = {"cmd": ["g++ -fno-gnu-unique -fPIC -g --std=c++17 -I ../../include -I ../../deps/install/include -rdynamic -O3 -fopenmp -DNDEBUG -o ./v2_pagerank.so ../../test/test_procedures/v2_pagerank.cpp ./liblgraph.so -shared",
+                      "g++ -fno-gnu-unique -fPIC -g --std=c++17 -I ../../include -I ../../deps/install/include -rdynamic -O3 -fopenmp -DNDEBUG -o ./v2_test_path.so ../../test/test_procedures/v2_test_path.cpp ./liblgraph.so -shared"],
+              "so_name": ["v2_pagerank.so", "v2_test_path.so"]}
 
 IMPORTCONTENT = {
     "schema" : '''{"schema" : [
@@ -319,11 +323,11 @@ class TestProcedure:
     @pytest.mark.parametrize("server", [SERVEROPT], indirect=True)
     @pytest.mark.parametrize("client", [CLIENTOPT], indirect=True)
     def test_vertex_label(self, server, client):
-        ret = client.callCypher("CALL db.createVertexLabel('actor', 'name', 'name', string, false, 'age', int8, true)", "default")
+        ret = client.callCypher("CALL db.createVertexLabel('actor', 'name', 'name', 'string', false, 'age', 'int8', true)", "default")
         assert ret[0]
-        ret = client.callCypher("CALL db.createVertexLabel('actor', 'name', 'name', string, false, 'age', int8, true)", "default")
+        ret = client.callCypher("CALL db.createVertexLabel('actor', 'name', 'name', 'string', false, 'age', 'int8', true)", "default")
         assert ret[0] == False
-        ret = client.callCypher("CALL db.createVertexLabel('dirctor', 'name', 'name', string, false, 'age', int8, true)", "default")
+        ret = client.callCypher("CALL db.createVertexLabel('dirctor', 'name', 'name', 'string', false, 'age', 'int8', true)", "default")
         assert ret[0]
         ret = client.callCypher("CALL db.vertexLabels()", "default")
         assert ret[0]
@@ -340,11 +344,11 @@ class TestProcedure:
     @pytest.mark.parametrize("server", [SERVEROPT], indirect=True)
     @pytest.mark.parametrize("client", [CLIENTOPT], indirect=True)
     def test_edge_label(self, server, client):
-        ret = client.callCypher("CALL db.createEdgeLabel('followed', '[]', 'address', string, false, 'date', int32, false)", "default")
+        ret = client.callCypher("CALL db.createEdgeLabel('followed', '[]', 'address', 'string', false, 'date', 'int32', false)", "default")
         assert ret[0]
-        ret = client.callCypher("CALL db.createEdgeLabel('followed', '[]', 'address', string, false, 'date', int32, false)", "default")
+        ret = client.callCypher("CALL db.createEdgeLabel('followed', '[]', 'address', 'string', false, 'date', 'int32', false)", "default")
         assert ret[0] == False
-        ret = client.callCypher("CALL db.createEdgeLabel('married', '[]', 'address', string, false, 'date', int32, false)", "default")
+        ret = client.callCypher("CALL db.createEdgeLabel('married', '[]', 'address', 'string', false, 'date', 'int32', false)", "default")
         assert ret[0]
         ret = client.callCypher("CALL db.edgeLabels()", "default")
         assert ret[0]
@@ -362,9 +366,9 @@ class TestProcedure:
     @pytest.mark.parametrize("server", [SERVEROPT], indirect=True)
     @pytest.mark.parametrize("client", [CLIENTOPT], indirect=True)
     def test_index(self, server, client):
-        ret = client.callCypher("CALL db.createVertexLabel('actor', 'name', 'name', string, false, 'age', int8, true)", "default")
+        ret = client.callCypher("CALL db.createVertexLabel('actor', 'name', 'name', 'string', false, 'age', 'int8', true)", "default")
         assert ret[0]
-        ret = client.callCypher("CALL db.createVertexLabel('actor', 'name', 'name', string, false, 'age', int8, true)", "default")
+        ret = client.callCypher("CALL db.createVertexLabel('actor', 'name', 'name', 'string', false, 'age', 'int8', true)", "default")
         assert ret[0] == False
         ret = client.callCypher("CALL db.indexes()", "default")
         assert ret[0]
@@ -398,9 +402,9 @@ class TestProcedure:
     @pytest.mark.parametrize("server", [SERVEROPT], indirect=True)
     @pytest.mark.parametrize("client", [CLIENTOPT], indirect=True)
     def test_create_label(self, server, client):
-        ret = client.callCypher("CALL db.createLabel('vertex', 'animal', 'sleep', ['eat', string, true], ['sleep', int8, false])", "default")
+        ret = client.callCypher("CALL db.createLabel('vertex', 'animal', 'sleep', ['eat', 'string', true], ['sleep', 'int8', false])", "default")
         assert ret[0]
-        ret = client.callCypher("CALL db.createLabel('vertex', 'animal', 'sleep', ['eat', string, true], ['sleep', int8, false])", "default")
+        ret = client.callCypher("CALL db.createLabel('vertex', 'animal', 'sleep', ['eat', 'string', true], ['sleep', 'int8', false])", "default")
         assert ret[0] == False
         ret = client.callCypher("CALL db.vertexLabels()", "default")
         assert ret[0]
@@ -420,9 +424,9 @@ class TestProcedure:
     @pytest.mark.parametrize("server", [SERVEROPT], indirect=True)
     @pytest.mark.parametrize("client", [CLIENTOPT], indirect=True)
     def test_label_field(self, server, client):
-        ret = client.callCypher("CALL db.createLabel('vertex', 'animal', 'sleep', ['eat', string, true], ['sleep', int8, false])", "default")
+        ret = client.callCypher("CALL db.createLabel('vertex', 'animal', 'sleep', ['eat', 'string', true], ['sleep', 'int8', false])", "default")
         assert ret[0]
-        ret = client.callCypher("CALL db.alterLabelAddFields('vertex', 'animal', ['run', string, '',true], ['jeep', int8, 10,false])", "default")
+        ret = client.callCypher("CALL db.alterLabelAddFields('vertex', 'animal', ['run', 'string', '',true], ['jeep', 'int8', 10,false])", "default")
         assert ret[0]
 
         ret = client.callCypher("CALL db.getLabelSchema('vertex', 'animal')", "default")
@@ -435,7 +439,7 @@ class TestProcedure:
             if field.get("name") == "jeep":
                 field.get("type") == "int8"
 
-        ret = client.callCypher("CALL db.alterLabelModFields('vertex', 'animal',['run', int8, false], ['jeep', int32, true])", "default")
+        ret = client.callCypher("CALL db.alterLabelModFields('vertex', 'animal',['run', 'int8', false], ['jeep', 'int32', true])", "default")
         assert ret[0]
 
         ret = client.callCypher("CALL db.getLabelSchema('vertex', 'animal')", "default")
@@ -467,7 +471,7 @@ class TestProcedure:
         procedures = json.loads(ret[1])
         #TODO when this assert failed , you should add the additional procedure test code or remove the deleted procedure test code
         log.info("procedures count : %s", len(procedures))
-        assert len(procedures) == 91
+        assert len(procedures) == 114
 
 
     @pytest.mark.parametrize("server", [SERVEROPT], indirect=True)
@@ -745,6 +749,32 @@ class TestProcedure:
         assert ret[0]
         plugins = json.loads(ret[1])
         assert len(plugins) == 1
+
+    @pytest.mark.parametrize("build_so", [BUILDV2OPT], indirect=True)
+    @pytest.mark.parametrize("importor", [IMPORTOPT], indirect=True)
+    @pytest.mark.parametrize("server", [SERVEROPT], indirect=True)
+    @pytest.mark.parametrize("client", [CLIENTOPT], indirect=True)
+    def test_plugin_v2(self, build_so, importor, server, client):
+        pagerank_so = BUILDV2OPT.get("so_name")[0]
+        ret = client.loadProcedure(pagerank_so, "CPP", "v2_pagerank", "SO", "test plugin", True, "v2")
+        assert ret[0]
+        shortestpath_so = BUILDV2OPT.get("so_name")[1]
+        ret = client.loadProcedure(shortestpath_so, "CPP", "v2_test_path", "SO", "test plugin", True, "v2")
+        assert ret[0]
+        ret = client.callCypher("MATCH (a:Person {name:\"Christopher Nolan\"}), (b:Person {name: \"Corin Redgrave\"}) "
+                                "CALL plugin.cpp.v2_test_path(a, b) YIELD length, nodeIds "
+                                "RETURN length")
+        assert ret[0]
+        result = json.loads(ret[1])[0].get("length")
+        assert result == 5
+        ret = client.callCypher("CALL plugin.cpp.v2_pagerank(10) "
+                                "YIELD node, weight WITH node, weight "
+                                "RETURN MAX(weight)")
+        assert ret[0]
+        result = json.loads(ret[1])[0].get("MAX(weight)")
+        import math
+        assert math.isclose(result, 0.07308246478538732, rel_tol=1e-5)
+
 
     @pytest.mark.parametrize("importor", [IMPORTOPT], indirect=True)
     @pytest.mark.parametrize("server", [SERVEROPT], indirect=True)

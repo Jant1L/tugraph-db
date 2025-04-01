@@ -28,6 +28,7 @@ class OutEdgeIterator;
 class InEdgeIterator;
 class VertexIndexIterator;
 class EdgeIndexIterator;
+class VertexCompositeIndexIterator;
 
 /**
  * @brief   TuGraph operations happen in transactions. A transaction is sequence of operations
@@ -62,7 +63,7 @@ class Transaction {
 
     /**
      * @brief   Commits this transaction. Note that optimistic write transactions may fail to
-     *          commit (an TxnConflictError would be thrown).
+     *          commit (an TxnConflict would be thrown).
      */
     void Commit();
 
@@ -290,6 +291,24 @@ class Transaction {
                       const std::vector<FieldData>& field_values);
 
     /**
+     * @brief   Upsert a vertex.
+     *
+     * @param   label_id        Label id.
+     * @param   primary_pos     The location of the primary field in field_ids.
+     * @param   unique_pos      The locations of the unique index field in field_ids, can be empty.
+     * @param   field_ids       List of field ids.
+     * @param   field_values    The field values.
+     *
+     * @returns  0: nothing happened because of index conflict
+     *           1: the vertex is inserted
+     *           2: the vertex is updated
+     */
+    int UpsertVertex(size_t label_id, size_t primary_pos,
+                      const std::vector<size_t>& unique_pos,
+                      const std::vector<size_t>& field_ids,
+                      const std::vector<FieldData>& field_values);
+
+    /**
      * @brief   Adds an edge. All non-nullable fields must be specified. An exception is thrown
      *          if src or dst does not exist.
      *
@@ -387,11 +406,39 @@ class Transaction {
                     const std::vector<FieldData>& field_values);
 
     /**
+     * @brief   Upsert edge. If there is no src->dst edge, insert it. Otherwise, try to update
+     *          the edge's property.
+     *
+     * @param   src             Source vertex id.
+     * @param   dst             Destination vertex id.
+     * @param   label_id        The label id.
+     * @param   unique_pos      The locations of the unique index field in field_ids, can be empty.
+     * @param   field_ids       List of field ids.
+     * @param   field_values    List of field values.
+     *
+     * @returns  0: nothing happened because of index conflict
+     *           1: the vertex is inserted
+     *           2: the vertex is updated
+     */
+    int UpsertEdge(int64_t src, int64_t dst, size_t label_id,
+                   const std::vector<size_t>& unique_pos,
+                   const std::vector<size_t>& field_ids,
+                   const std::vector<FieldData>& field_values,
+                   std::optional<size_t> pair_unique_pos);
+
+    /**
      * @brief   List indexes
      *
      * @returns A vector of vertex index specs.
      */
     std::vector<IndexSpec> ListVertexIndexes();
+
+    /**
+     * @brief   List indexes
+     *
+     * @returns A vector of vertex composite index specs.
+     */
+    std::vector<CompositeIndexSpec> ListVertexCompositeIndexes();
 
     /**
      * @brief   List indexes
@@ -416,6 +463,11 @@ class Transaction {
                                                const FieldData& key_start,
                                                const FieldData& key_end);
 
+    VertexCompositeIndexIterator GetVertexCompositeIndexIterator(size_t label_id,
+                                               const std::vector<size_t>& field_id,
+                                               const std::vector<FieldData>& key_start,
+                                               const std::vector<FieldData>& key_end);
+
     /**
      * @brief   Gets edge index iterator. The iterator has field value [key_start, key_end]. So
      *          key_start=key_end=v returns an iterator pointing to all edges that has field
@@ -430,6 +482,11 @@ class Transaction {
      */
     EdgeIndexIterator GetEdgeIndexIterator(size_t label_id, size_t field_id,
                                            const FieldData& key_start, const FieldData& key_end);
+
+    EdgeIndexIterator GetEdgePairUniqueIndexIterator(size_t label_id, size_t field_id,
+                                                     int64_t src_vid, int64_t dst_vid,
+                                                     const FieldData& key_start,
+                                                     const FieldData& key_end);
 
     /**
      * @brief   Gets vertex index iterator. The iterator has field value [key_start, key_end]. So
@@ -446,6 +503,11 @@ class Transaction {
     VertexIndexIterator GetVertexIndexIterator(const std::string& label, const std::string& field,
                                                const FieldData& key_start,
                                                const FieldData& key_end);
+
+    VertexCompositeIndexIterator GetVertexCompositeIndexIterator(const std::string& label,
+                                               const std::vector<std::string>& field,
+                                               const std::vector<FieldData>& key_start,
+                                               const std::vector<FieldData>& key_end);
 
     /**
      * @brief   Gets index iterator. The iterator has field value [key_start, key_end]. So
@@ -477,6 +539,11 @@ class Transaction {
     VertexIndexIterator GetVertexIndexIterator(const std::string& label, const std::string& field,
                                                const std::string& key_start,
                                                const std::string& key_end);
+
+    VertexCompositeIndexIterator GetVertexCompositeIndexIterator(const std::string& label,
+                                               const std::vector<std::string>& field,
+                                               const std::vector<std::string>& key_start,
+                                               const std::vector<std::string>& key_end);
 
     /**
      * @brief   Gets index iterator. The iterator has field value [key_start, key_end]. So
@@ -545,6 +612,10 @@ class Transaction {
                                           const std::string& field_name,
                                           const std::string& field_value_string);
 
+    VertexIterator GetVertexByUniqueCompositeIndex(const std::string& label_name,
+                                          const std::vector<std::string>& field_name,
+                                          const std::vector<std::string>& field_value_string);
+
     /**
      * @brief   Gets edge by unique index. Throws exception if there is no such vertex.
      *
@@ -571,6 +642,10 @@ class Transaction {
                                           const std::string& field_name,
                                           const FieldData& field_value);
 
+    VertexIterator GetVertexByUniqueCompositeIndex(const std::string& label_name,
+                                          const std::vector<std::string>& field_name,
+                                          const std::vector<FieldData>& field_value);
+
     /**
      * @brief   Gets edge by unique index. Throws exception if there is no such vertex.
      *
@@ -595,6 +670,10 @@ class Transaction {
      */
     VertexIterator GetVertexByUniqueIndex(size_t label_id, size_t field_id,
                                           const FieldData& field_value);
+
+    VertexIterator GetVertexByUniqueCompositeIndex(size_t label_id,
+                                          const std::vector<size_t>& field_id,
+                                          const std::vector<FieldData>& field_value);
 
     /**
      * @brief   Gets edge by unique index. Throws exception if there is no such vertex.

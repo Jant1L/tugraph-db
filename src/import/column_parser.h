@@ -138,10 +138,10 @@ class ColumnParser : public BlockParser {
 
     void CheckDelimAndResetErrors() {
         if (delimiter_.empty()) {
-            throw lgraph::InputError("Delimiter cannot be empty.");
+            THROW_CODE(InputError, "Delimiter cannot be empty.");
         }
         if (delimiter_.find_first_of("\r\n") != delimiter_.npos) {
-            throw lgraph::InputError("Delimiter cannot contain \\r or \\n.");
+            THROW_CODE(InputError, "Delimiter cannot contain \\r or \\n.");
         }
         errors_ = 0;
     }
@@ -617,6 +617,8 @@ class JsonLinesParser : public BlockParser {
                 case FieldType::SPATIAL:
                     // TODO(shw): support import for spatial type;
                     throw std::runtime_error("do not support spatial type now!");
+                case FieldType::FLOAT_VECTOR:
+                    throw std::runtime_error("do not support FLOAT_VECTOR type now!");
                 }
                 if (fd.is_null()) {
                     throw std::bad_cast();

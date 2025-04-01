@@ -28,19 +28,29 @@
 #include "parser/generated/LcypherLexer.h"
 #include "parser/generated/LcypherParser.h"
 #include "parser/cypher_base_visitor.h"
+#include "parser/cypher_base_visitor_v2.h"
 #include "parser/cypher_error_listener.h"
 
 #include "cypher/execution_plan/execution_plan.h"
 #include "cypher/execution_plan/scheduler.h"
 #include "cypher/execution_plan/execution_plan_v2.h"
 #include "cypher/rewriter/GenAnonymousAliasRewriter.h"
+#include "cypher/rewriter/MultiPathPatternRewriter.h"
+#include "cypher/rewriter/PushDownFilterAstRewriter.h"
+#include "cypher/execution_plan/clause_read_only_decider.h"
+
+#include "server/bolt_session.h"
 
 namespace cypher {
 
 void Scheduler::Eval(RTContext *ctx, const lgraph_api::GraphQueryType &type,
                      const std::string &script, ElapsedTime &elapsed) {
     if (type == lgraph_api::GraphQueryType::CYPHER) {
-        EvalCypher(ctx, script, elapsed);
+        if (ctx->is_cypher_v2_) {
+            EvalCypher2(ctx, script, elapsed);
+        } else {
+            EvalCypher(ctx, script, elapsed);
+        }
     } else {
         EvalGql(ctx, script, elapsed);
     }
@@ -78,27 +88,52 @@ void Scheduler::EvalCypher(RTContext *ctx, const std::string &script, ElapsedTim
             LOG_DEBUG() << sql_query.ToString();
         }
         plan = std::make_shared<ExecutionPlan>();
+        plan->PreValidate(ctx, visitor.GetNodeProperty(), visitor.GetRelProperty());
         plan->Build(visitor.GetQuery(), visitor.CommandType(), ctx);
         plan->Validate(ctx);
-        if (visitor.CommandType() == parser::CmdType::EXPLAIN) {
+        if (plan->CommandType() != parser::CmdType::QUERY) {
             ctx->result_info_ = std::make_unique<ResultInfo>();
             ctx->result_ = std::make_unique<lgraph::Result>();
-
-            ctx->result_->ResetHeader({{"@plan", lgraph_api::LGraphType::STRING}});
+            std::string header, data;
+            if (plan->CommandType() == parser::CmdType::EXPLAIN) {
+                header = "@plan";
+                data = plan->DumpPlan(0, false);
+            } else {
+                header = "@profile";
+                data = plan->DumpGraph();
+            }
+            ctx->result_->ResetHeader({{header, lgraph_api::LGraphType::STRING}});
             auto r = ctx->result_->MutableRecord();
-            r->Insert("@plan", lgraph::FieldData(plan->DumpPlan(0, false)));
+            r->Insert(header, lgraph::FieldData(data));
+            if (ctx->bolt_conn_) {
+                auto session = (bolt::BoltSession *)ctx->bolt_conn_->GetContext();
+                ctx->result_->MarkPythonDriver(session->python_driver);
+                while (!session->streaming_msg) {
+                    session->streaming_msg = session->msgs.Pop(std::chrono::milliseconds(100));
+                    if (ctx->bolt_conn_->has_closed()) {
+                        LOG_INFO() << "The bolt connection is closed, cancel the op execution.";
+                        return;
+                    }
+                }
+                std::unordered_map<std::string, std::any> meta;
+                meta["fields"] = ctx->result_->BoltHeader();
+                bolt::PackStream ps;
+                ps.AppendSuccess(meta);
+                if (session->streaming_msg.value().type == bolt::BoltMsg::PullN) {
+                    ps.AppendRecords(ctx->result_->BoltRecords());
+                } else if (session->streaming_msg.value().type == bolt::BoltMsg::DiscardN) {
+                    // ...
+                }
+                ps.AppendSuccess();
+                ctx->bolt_conn_->PostResponse(std::move(ps.MutableBuffer()));
+            }
             return;
         }
         LOG_DEBUG() << "Plan cache disabled.";
-        // FMA_DBG_STREAM(Logger())
-        //     << "Miss execution plan cache, build plan for this query.";
-    } else {
-        // FMA_DBG_STREAM(Logger())
-        //     << "Hit execution plan cache.";
     }
+    LOG_DEBUG() << plan->DumpPlan(0, false);
+    LOG_DEBUG() << plan->DumpGraph();
     elapsed.t_compile = fma_common::GetTime() - t0;
-    plan->DumpGraph();
-    plan->DumpPlan(0, false);
     if (!plan->ReadOnly() && ctx->optimistic_) {
         while (1) {
             try {
@@ -113,24 +148,123 @@ void Scheduler::EvalCypher(RTContext *ctx, const std::string &script, ElapsedTim
     }
     elapsed.t_total = fma_common::GetTime() - t0;
     elapsed.t_exec = elapsed.t_total - elapsed.t_compile;
-    if (plan->CommandType() == CmdType::PROFILE) {
-        ctx->result_info_ = std::make_unique<ResultInfo>();
-        ctx->result_ = std::make_unique<lgraph::Result>();
-        ctx->result_->ResetHeader({{"@profile", lgraph_api::LGraphType::STRING}});
+}
 
-        auto r = ctx->result_->MutableRecord();
-        r->Insert("@profile", lgraph::FieldData(plan->DumpGraph()));
-        return;
-    } else {
-        /* promote priority of the recent plan
-         * OR add the plan to the plan cache.  */
-        // tls_plan_cache.Put(script, plan);
-        // FMA_DBG_STREAM(Logger())
-        //     << "Current Plan Cache (tid" << std::this_thread::get_id() << "):";
-        // for (auto &p : tls_plan_cache.List())
-        //     FMA_DBG_STREAM(Logger()) << p.first << "\n";
-        // return;
+bool Scheduler::ReadOnlyCypher(cypher::RTContext *ctx, const std::string &script) {
+    geax::common::ObjectArenaAllocator objAlloc;
+    antlr4::ANTLRInputStream input(script);
+    parser::LcypherLexer lexer(&input);
+    antlr4::CommonTokenStream tokens(&lexer);
+    parser::LcypherParser parser(&tokens);
+    parser.addErrorListener(&parser::CypherErrorListener::INSTANCE);
+    parser::CypherBaseVisitorV2 visitor(objAlloc, parser.oC_Cypher(), ctx);
+    geax::frontend::AstNode *node = visitor.result();
+    ClauseReadOnlyDecider decider;
+    decider.Build(node, ctx);
+    return decider.IsReadOnly();
+}
+
+void Scheduler::EvalCypher2(RTContext *ctx, const std::string &script, ElapsedTime &elapsed) {
+    using namespace lgraph_log;
+    auto t0 = fma_common::GetTime();
+    thread_local LRUCacheThreadUnsafe<std::string, std::shared_ptr<ExecutionPlanV2>> tls_plan_cache;
+    std::shared_ptr<ExecutionPlanV2> plan;
+    geax::common::ObjectArenaAllocator objAlloc_;
+    LOG_DEBUG() << script;
+    if (!tls_plan_cache.Get(script, plan)) {
+        antlr4::ANTLRInputStream input(script);
+        parser::LcypherLexer lexer(&input);
+        antlr4::CommonTokenStream tokens(&lexer);
+        parser::LcypherParser parser(&tokens);
+        parser.addErrorListener(&parser::CypherErrorListener::INSTANCE);
+        parser::CypherBaseVisitorV2 visitor(objAlloc_, parser.oC_Cypher(), ctx);
+        geax::frontend::AstNode *node = visitor.result();
+        cypher::GenAnonymousAliasRewriter gen_anonymous_alias_rewriter;
+        node->accept(gen_anonymous_alias_rewriter);
+        cypher::MultiPathPatternRewriter multi_path_pattern_rewriter(objAlloc_);
+        node->accept(multi_path_pattern_rewriter);
+        cypher::PushDownFilterAstRewriter push_down_filter_ast_writer(objAlloc_, ctx);
+        node->accept(push_down_filter_ast_writer);
+        if (LoggerManager::GetInstance().GetLevel() <= severity_level::DEBUG) {
+            geax::frontend::AstDumper dumper;
+            auto ret = dumper.handle(node);
+            if (ret != geax::frontend::GEAXErrorCode::GEAX_SUCCEED) {
+                LOG_DEBUG() << FMA_FMT("failed to dump ast, cypher:{}, ret:{}, error_msg:{}",
+                                       script, ToString(ret), dumper.error_msg());
+                // THROW_CODE(CypherException, dumper.error_msg());
+            } else {
+                LOG_DEBUG() << "--- Dump AST---";
+                LOG_DEBUG() << dumper.dump().substr(0, 1024);
+            }
+        }
+        plan = std::make_shared<ExecutionPlanV2>();
+        plan->PreValidate(ctx, visitor.GetNodeProperty(), visitor.GetRelProperty());
+        auto ret = plan->Build(node, ctx);
+        if (ret != geax::frontend::GEAXErrorCode::GEAX_SUCCEED) {
+            LOG_WARN() << "failed to build plan: " << plan->ErrorMsg();
+            THROW_CODE(CypherException, plan->ErrorMsg());
+        }
+        plan->Validate(ctx);
+        if (visitor.CommandType() != parser::CmdType::QUERY) {
+            ctx->result_info_ = std::make_unique<cypher::ResultInfo>();
+            ctx->result_ = std::make_unique<lgraph::Result>();
+            std::string header, data;
+            if (visitor.CommandType() == parser::CmdType::EXPLAIN) {
+                header = "@plan";
+                data = plan->DumpPlan(0, false);
+            } else {
+                header = "@profile";
+                data = plan->DumpGraph();
+            }
+            ctx->result_->ResetHeader({{header, lgraph_api::LGraphType::STRING}});
+            auto r = ctx->result_->MutableRecord();
+            r->Insert(header, lgraph::FieldData(data));
+            LOG_DEBUG() << "--- execution_plan_v2 dump ---";
+            LOG_DEBUG() << ctx->result_->Dump(false);
+            if (ctx->bolt_conn_) {
+                auto session = (bolt::BoltSession *)ctx->bolt_conn_->GetContext();
+                ctx->result_->MarkPythonDriver(session->python_driver);
+                while (!session->streaming_msg) {
+                    session->streaming_msg = session->msgs.Pop(std::chrono::milliseconds(100));
+                    if (ctx->bolt_conn_->has_closed()) {
+                        LOG_INFO() << "The bolt connection is closed, cancel the op execution.";
+                        return;
+                    }
+                }
+                std::unordered_map<std::string, std::any> meta;
+                meta["fields"] = ctx->result_->BoltHeader();
+                bolt::PackStream ps;
+                ps.AppendSuccess(meta);
+                if (session->streaming_msg.value().type == bolt::BoltMsg::PullN) {
+                    ps.AppendRecords(ctx->result_->BoltRecords());
+                } else if (session->streaming_msg.value().type == bolt::BoltMsg::DiscardN) {
+                    // ...
+                }
+                ps.AppendSuccess();
+                ctx->bolt_conn_->PostResponse(std::move(ps.MutableBuffer()));
+            }
+            return;
+        }
     }
+    LOG_DEBUG() << plan->DumpPlan(0, false);
+    LOG_DEBUG() << plan->DumpGraph();
+    elapsed.t_compile = fma_common::GetTime() - t0;
+    if (!plan->ReadOnly() && ctx->optimistic_) {
+        while (1) {
+            try {
+                plan->Execute(ctx);
+                break;
+            } catch (lgraph::TxnCommitException &e) {
+                LOG_DEBUG() << e.what();
+            }
+        }
+    } else {
+        plan->Execute(ctx);
+    }
+    LOG_DEBUG() << "-----result-----";
+    LOG_DEBUG() << ctx->result_->Dump(false);
+    elapsed.t_total = fma_common::GetTime() - t0;
+    elapsed.t_exec = elapsed.t_total - elapsed.t_compile;
 }
 
 void Scheduler::EvalGql(RTContext *ctx, const std::string &script, ElapsedTime &elapsed) {
@@ -172,7 +306,7 @@ void Scheduler::EvalGql(RTContext *ctx, const std::string &script, ElapsedTime &
         LOG_DEBUG() << dumper.dump();
     }
     cypher::ExecutionPlanV2 execution_plan_v2;
-    ret = execution_plan_v2.Build(node);
+    ret = execution_plan_v2.Build(node, ctx);
     elapsed.t_compile = fma_common::GetTime() - t0;
     if (ret != GEAXErrorCode::GEAX_SUCCEED) {
         LOG_DEBUG() << "build execution_plan_v2 failed: " << execution_plan_v2.ErrorMsg();

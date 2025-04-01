@@ -94,9 +94,7 @@ class OpDelete : public OpBase {
                 .append(" vertices, deleted ")
                 .append(std::to_string(ctx->result_info_->statistics.edges_deleted))
                 .append(" edges.");
-            auto header = ctx->result_->Header();
-            header.emplace_back(std::make_pair("<SUMMARY>", lgraph_api::LGraphType::STRING));
-            ctx->result_->ResetHeader(header);
+            CYPHER_THROW_ASSERT(ctx->result_->Header().size() == 1);
             CYPHER_THROW_ASSERT(record);
             record->values.clear();
             record->AddConstant(lgraph::FieldData(summary));
@@ -108,7 +106,8 @@ class OpDelete : public OpBase {
 
  public:
     OpDelete(const parser::QueryPart *stmt, PatternGraph *pattern_graph)
-        : OpBase(OpType::DELETE_, "Delete"), pattern_graph_(pattern_graph) {
+        : OpBase(OpType::DELETE_, "Delete")
+        , pattern_graph_(pattern_graph) {
         delete_data_ = *stmt->delete_clause;
         state = StreamUnInitialized;
     }

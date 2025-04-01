@@ -30,28 +30,7 @@ class OpCreate : public OpBase {
     bool summary_ = false;
 
     void ExtractProperties(RTContext *ctx, const parser::TUP_PROPERTIES &properties,
-                           VEC_STR &fields, std::vector<lgraph::FieldData> &values) {
-        using namespace parser;
-        Expression map_literal = std::get<0>(properties);
-        CYPHER_THROW_ASSERT(map_literal.type == Expression::NA ||
-                            map_literal.type == Expression::MAP);
-        if (map_literal.type != Expression::MAP) return;
-        for (auto &prop : map_literal.Map()) {
-            fields.emplace_back(prop.first);
-            Expression p;
-            if (prop.second.type == Expression::LIST) {
-                p = prop.second.List().at(0);
-            } else if (prop.second.type == Expression::MAP) {
-                CYPHER_TODO();
-            } else {
-                p = prop.second;
-            }
-            ArithExprNode ae(p, *record->symbol_table);
-            auto value = ae.Evaluate(ctx, *record);
-            CYPHER_THROW_ASSERT(value.IsScalar());
-            values.emplace_back(value.constant.scalar);
-        }
-    }
+                           VEC_STR &fields, std::vector<lgraph::FieldData> &values);
 
     void CreateVertex(RTContext *ctx, const parser::TUP_NODE_PATTERN &node_pattern) {
         using namespace parser;
@@ -174,10 +153,7 @@ class OpCreate : public OpBase {
                 .append(" vertices, created ")
                 .append(std::to_string(ctx->result_info_->statistics.edges_created))
                 .append(" edges.");
-            auto header = ctx->result_->Header();
-            header.emplace_back(std::make_pair("<SUMMARY>", lgraph_api::LGraphType::STRING));
-            ctx->result_->ResetHeader(header);
-            // ctx->result_info_->header.colums.emplace_back("<SUMMARY>");
+            CYPHER_THROW_ASSERT(ctx->result_->Header().size() == 1);
             CYPHER_THROW_ASSERT(record);
             record->values.clear();
             record->AddConstant(lgraph::FieldData(summary));
@@ -211,7 +187,8 @@ class OpCreate : public OpBase {
         for (auto child : children) {
             child->Initialize(ctx);
         }
-        record = children.empty() ? std::make_shared<Record>(sym_tab_.symbols.size(), &sym_tab_)
+        record = children.empty() ?
+            std::make_shared<Record>(sym_tab_.symbols.size(), &sym_tab_, ctx->param_tab_)
                                   : children[0]->record;
         return OP_OK;
     }

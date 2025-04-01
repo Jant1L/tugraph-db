@@ -112,6 +112,8 @@ inline pybind11::object FieldDataToPyObj(const FieldData& data) {
     case FieldType::POLYGON:
     case FieldType::SPATIAL:
         return pybind11::str(*data.data.buf);
+    case FieldType::FLOAT_VECTOR:
+        return pybind11::cast(data.AsFloatVector());
     }
     FMA_ASSERT(false);
     return pybind11::none();
@@ -145,7 +147,7 @@ void register_python_api(pybind11::module& m) {
         .def_readwrite("name", &FieldSpec::name, "Name of this field.")
         .def_readwrite("type", &FieldSpec::type,
                        "Type of this field, INT8, INT16, ..., POINT, LINESTRING,"
-                       "POLYGON, SPATIAL.")
+                       "POLYGON, SPATIAL, FLOAT_VECTOR")
         .def_readwrite("nullable", &FieldSpec::optional, "Whether this field can be null.")
         .def("__repr__", [](const FieldSpec& a) {
             return fma_common::StringFormatter::Format("(name:{}, type:{}, nullable:{})", a.name,
@@ -303,6 +305,11 @@ void register_python_api(pybind11::module& m) {
                 return FieldData::Spatial(str);
             },
             "Make a Spatial value")
+        .def_static(
+            "Float_Vector", [](std::vector<float>& vec) {
+                return FieldData::FloatVector(vec);
+            },
+            "Make a FLOAT VECTOR value")
         .def("AsBool", &FieldData::AsBool, "Get value as bool, throws exception on type mismatch",
              pybind11::call_guard<SignalsGuard>())
         .def("AsInt8", &FieldData::AsInt8, "Get value as int8, throws exception on type mismatch",
@@ -351,7 +358,7 @@ void register_python_api(pybind11::module& m) {
                 case ::lgraph_api::SRID::CARTESIAN:
                     return pybind11::str(a.AsCartesianPoint().ToString());
                 default:
-                    throw lgraph::InputError("unsupported spatial srid");
+                    THROW_CODE(InputError, "unsupported spatial srid");
                 }
             },
             "Get value as point, throws exception on type mismatch",
@@ -365,7 +372,7 @@ void register_python_api(pybind11::module& m) {
                 case ::lgraph_api::SRID::CARTESIAN:
                     return pybind11::str(a.AsCartesianLineString().ToString());
                 default:
-                    throw lgraph::InputError("unsupported spatial srid");
+                    THROW_CODE(InputError, "unsupported spatial srid");
                 }
             },
             "Get value as linestring, throws exception on type mismatch",
@@ -379,7 +386,7 @@ void register_python_api(pybind11::module& m) {
                 case ::lgraph_api::SRID::CARTESIAN:
                     return pybind11::str(a.AsCartesianPolygon().ToString());
                 default:
-                    throw lgraph::InputError("unsupported spatial srid");
+                    THROW_CODE(InputError, "unsupported spatial srid");
                 }
             },
             "Get value as polygon, throws exception on type mismatch",
@@ -393,10 +400,16 @@ void register_python_api(pybind11::module& m) {
                 case ::lgraph_api::SRID::CARTESIAN:
                     return pybind11::str(a.AsCartesianSpatial().ToString());
                 default:
-                    throw lgraph::InputError("unsupported spatial srid");
+                    THROW_CODE(InputError, "unsupported spatial srid");
                 }
             },
             "Get value as spatial, throws exception on type mismatch",
+            pybind11::call_guard<SignalsGuard>())
+        .def(
+            "AsFloatVector", [](const FieldData& a) {
+                return a.AsFloatVector();
+            },
+            "Get value as float vector, throws exception on type mismatch",
             pybind11::call_guard<SignalsGuard>())
         .def(
             "ToPython", [](const FieldData& fd) { return FieldDataToPyObj(fd); },
@@ -472,6 +485,7 @@ void register_python_api(pybind11::module& m) {
         .value("LINESTRING", FieldType::LINESTRING)
         .value("POLYGON", FieldType::POLYGON)
         .value("SPATIAL", FieldType::SPATIAL)
+        .value("FLOAT_VECTOR", FieldType::FLOAT_VECTOR)
         .export_values();
 
     pybind11::enum_<lgraph_api::AccessLevel>(m, "AccessLevel", pybind11::arithmetic(),
@@ -673,7 +687,7 @@ void register_python_api(pybind11::module& m) {
             [](GraphDB& db, const std::string& label) {
                 size_t n;
                 if (db.DeleteVertexLabel(label, &n)) return n;
-                throw lgraph::InputError("No such label.");
+                THROW_CODE(InputError, "No such label.");
             },
             "Deletes a vertex label", pybind11::arg("label_name"),
             pybind11::call_guard<SignalsGuard>())
@@ -685,7 +699,7 @@ void register_python_api(pybind11::module& m) {
             [](GraphDB& db, const std::string& label, const std::vector<std::string>& del_fields) {
                 size_t n;
                 if (db.AlterVertexLabelDelFields(label, del_fields, &n)) return n;
-                throw lgraph::InputError("No such label.");
+                THROW_CODE(InputError, "No such label.");
             },
             "Delete fields from a vertex label\n"
             "label: name of the label\n"
@@ -698,7 +712,7 @@ void register_python_api(pybind11::module& m) {
                const std::vector<FieldData>& default_values) {
                 size_t n;
                 if (db.AlterVertexLabelAddFields(label, add_fields, default_values, &n)) return n;
-                throw lgraph::InputError("No such label.");
+                THROW_CODE(InputError, "No such label.");
             },
             "Add fields to a vertex label\n"
             "label: name of the label\n"
@@ -711,7 +725,7 @@ void register_python_api(pybind11::module& m) {
             [](GraphDB& db, const std::string& label, const std::vector<FieldSpec>& mod_fields) {
                 size_t n;
                 if (db.AlterVertexLabelModFields(label, mod_fields, &n)) return n;
-                throw lgraph::InputError("No such label.");
+                THROW_CODE(InputError, "No such label.");
             },
             "Modify fields in a vertex label\n"
             "label: name of the label\n"
@@ -727,7 +741,7 @@ void register_python_api(pybind11::module& m) {
             [](GraphDB& db, const std::string& label) {
                 size_t n;
                 if (db.DeleteEdgeLabel(label, &n)) return n;
-                throw lgraph::InputError("No such label.");
+                THROW_CODE(InputError, "No such label.");
             },
             "Deletes an edge label", pybind11::arg("label_name"),
             pybind11::call_guard<SignalsGuard>())
@@ -736,7 +750,7 @@ void register_python_api(pybind11::module& m) {
             [](GraphDB& db, const std::string& label, const std::vector<std::string>& del_fields) {
                 size_t n;
                 if (db.AlterEdgeLabelDelFields(label, del_fields, &n)) return n;
-                throw lgraph::InputError("No such label.");
+                THROW_CODE(InputError, "No such label.");
             },
             "Delete fields from an edge label\n"
             "label: name of the label\n"
@@ -749,7 +763,7 @@ void register_python_api(pybind11::module& m) {
                const std::vector<FieldData>& default_values) {
                 size_t n;
                 if (db.AlterEdgeLabelAddFields(label, add_fields, default_values, &n)) return n;
-                throw lgraph::InputError("No such label.");
+                THROW_CODE(InputError, "No such label.");
             },
             "Add fields to an edge label\n"
             "label: name of the label\n"
@@ -762,7 +776,7 @@ void register_python_api(pybind11::module& m) {
             [](GraphDB& db, const std::string& label, const std::vector<FieldSpec>& mod_fields) {
                 size_t n;
                 if (db.AlterEdgeLabelModFields(label, mod_fields, &n)) return n;
-                throw lgraph::InputError("No such label.");
+                THROW_CODE(InputError, "No such label.");
             },
             "Modify fields in an edge label\n"
             "label: name of the label\n"

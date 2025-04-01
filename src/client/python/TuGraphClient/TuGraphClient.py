@@ -7,15 +7,16 @@ import logging
 import warnings
 from functools import partial
 import httpx
+import nest_asyncio
 
-
+nest_asyncio.apply()
 requests = httpx.AsyncClient()
 warnings.simplefilter("ignore", UserWarning)
 
 
 # TODO: implement load balancing
 class AsyncTuGraphClient:
-    # 默认的客户端使用异步方式访问
+    # client accesses server asynchronously by default
 
     def __init__(self, start_host_port, username, password, graph='default', use_https=False, load_balance=False,
                  retry=3, retry_interval_s=1):
@@ -219,11 +220,12 @@ class AsyncTuGraphClient:
             content = f.read()
         data = {}
         data['name'] = name
-        data['code_base64'] = base64.b64encode(content).decode()
+        data['code_base64'] = [base64.b64encode(content).decode()]
         data['description'] = desc
         data['read_only'] = read_only
         data['code_type'] = file_type
         data['version'] = version
+        data['file_name'] = [file_path.split('/')[-1]]
         if file_type == 'cpp' or file_type == 'zip' or file_type == 'so':
             url = 'cpp_plugin'
         elif file_type == 'py':
@@ -318,8 +320,7 @@ class AsyncTuGraphClient:
 
 
 class TuGraphClient(AsyncTuGraphClient):
-    # 还是暴露之前的TuGraphClient
-    # 将之前暴露的8个接口重新封装成可以直接同步方式调用
+    # reserve legacy TuGraphClient for eight synchronous interface
 
     def list_graphs(self):
         return self._sync(partial(AsyncTuGraphClient.list_graphs, self))

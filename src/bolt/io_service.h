@@ -93,7 +93,7 @@ class IOService : private boost::asio::noncopyable {
         : handler_(handler),
           acceptor_(service, tcp::endpoint(tcp::v4(), port),
                     /*reuse_addr*/true),
-          io_service_pool_(thread_num), interval_(10), timer_(service) {
+          io_service_pool_(thread_num), interval_(5), timer_(service) {
         io_service_pool_.Run();
         invoke_async_accept();
         clean_closed_conn();
@@ -122,8 +122,8 @@ class IOService : private boost::asio::noncopyable {
     void clean_closed_conn() {
         for (auto it = connections_.cbegin(); it != connections_.cend();) {
             if (it->second->has_closed()) {
-                // std::cout << "connections pool erase connection[id: "
-                // << it->second->conn_id() << "]" << std::endl;
+                LOG_DEBUG() << FMA_FMT("erase connection[id:{},use_count:{}] from pool",
+                                       it->second->conn_id(), it->second.use_count());
                 it = connections_.erase(it);
             } else {
                 ++it;

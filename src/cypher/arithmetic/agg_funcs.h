@@ -85,13 +85,17 @@ class AvgAggCtx : public AggCtx {
     }
 
     int ReduceNext() override {
-        result.type = Entry::CONSTANT;
-        result.constant = lgraph::FieldData(count > 0 ? total / count : 0.0);
+        if (count > 0) {
+            result = Entry(cypher::FieldData(lgraph::FieldData(total / count)));
+        } else {
+            result = Entry(cypher::FieldData());
+        }
         return 0;
     }
 };
 
 class MaxAggCtx : public AggCtx {
+    size_t count = 0;
     double max = std::numeric_limits<double>::lowest();
 
  public:
@@ -104,18 +108,23 @@ class MaxAggCtx : public AggCtx {
                 return 1;
             }
             if (n > max) max = n;
+            count++;
         }
         return 0;
     }
 
     int ReduceNext() override {
-        result.type = Entry::CONSTANT;
-        result.constant = lgraph::FieldData(max);
+        if (count > 0) {
+            result = Entry(cypher::FieldData(lgraph::FieldData(max)));
+        } else {
+            result = Entry(cypher::FieldData());
+        }
         return 0;
     }
 };
 
 class MinAggCtx : public AggCtx {
+    size_t count = 0;
     double min = std::numeric_limits<double>::max();
 
  public:
@@ -128,47 +137,18 @@ class MinAggCtx : public AggCtx {
                 return 1;
             }
             if (n < min) min = n;
+            count++;
         }
         return 0;
     }
 
     int ReduceNext() override {
-        result.type = Entry::CONSTANT;
-        result.constant = lgraph::FieldData(min);
-        return 0;
-    }
-};
-
-// TODO(anyone): remove duplicate, defined in filter.h
-struct FieldDataHash {
-    size_t operator()(const lgraph_api::FieldData &fd) const {
-        using namespace lgraph_api;
-        switch (fd.type) {
-        case FieldType::BOOL:
-            return std::hash<bool>()(fd.AsBool());
-        case FieldType::INT8:
-            return std::hash<int8_t>()(fd.AsInt8());
-        case FieldType::INT16:
-            return std::hash<int16_t>()(fd.AsInt16());
-        case FieldType::INT32:
-            return std::hash<int32_t>()(fd.AsInt32());
-        case FieldType::INT64:
-            return std::hash<int64_t>()(fd.AsInt64());
-        case FieldType::FLOAT:
-            return std::hash<float>()(fd.AsFloat());
-        case FieldType::DOUBLE:
-            return std::hash<double>()(fd.AsDouble());
-        case FieldType::DATE:
-            return std::hash<int32_t>()(fd.AsDate().DaysSinceEpoch());
-        case FieldType::DATETIME:
-            return std::hash<int64_t>()(fd.AsDateTime().MicroSecondsSinceEpoch());
-        case FieldType::STRING:
-            return std::hash<std::string>()(fd.AsString());
-        case FieldType::BLOB:
-            return std::hash<std::string>()(fd.AsBlob());
-        default:
-            throw std::runtime_error("Unhandled data type, probably corrupted data.");
+        if (count > 0) {
+            result = Entry(cypher::FieldData(lgraph::FieldData(min)));
+        } else {
+            result = Entry(cypher::FieldData());
         }
+        return 0;
     }
 };
 
@@ -176,7 +156,7 @@ class CountAggCtx : public AggCtx {
     size_t count = 0;
     int distinct = -1;
     /* count(distinct sth), used to identify unique records. */
-    std::unordered_set<lgraph_api::FieldData, FieldDataHash> uset;
+    std::unordered_set<lgraph_api::FieldData, lgraph_api::FieldData::Hash> uset;
 
  public:
     int Step(const std::vector<Entry> &args) override {
@@ -224,6 +204,8 @@ class CountAggCtx : public AggCtx {
         return 0;
     }
 };
+
+class CountStarAggCtx : public CountAggCtx {};
 
 class CollectAggCtx : public AggCtx {
     bool distinct = false;

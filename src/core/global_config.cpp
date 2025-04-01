@@ -58,8 +58,10 @@ std::map<std::string, std::string> lgraph::GlobalConfig::FormatAsOptions() const
         AddOption(options, "HA node join(s)", ha_node_join_group_s);
         AddOption(options, "Bootstrap Role", ha_bootstrap_role);
     }
-    AddOption(options, "bolt_port", bolt_port);
-    AddOption(options, "bolt_thread_num", bolt_thread_num);
+    AddOption(options, "bolt port", bolt_port);
+    AddOption(options, "number of bolt io threads", bolt_io_thread_num);
+    AddOption(options, "bolt raft port", bolt_raft_port);
+    AddOption(options, "bolt raft node id", bolt_raft_node_id);
     return options;
 }
 
@@ -128,6 +130,9 @@ std::map<std::string, lgraph::FieldData> lgraph::GlobalConfig::ToFieldDataMap() 
         v["ha_node_join_group_s"] = FieldData(ha_node_join_group_s);
         v["ha_bootstrap_role"] = FieldData(ha_bootstrap_role);
     }
+    v["browser.credential_timeout"] = FieldData(browser_options.credential_timeout);
+    v["browser.retain_connection_credentials"] =
+        FieldData(browser_options.retain_connection_credentials);
     return v;
 }
 int lgraph::GlobalConfig::PrintVersion(std::string &config_file, std::string &cmd,
@@ -201,17 +206,31 @@ fma_common::Configuration lgraph::GlobalConfig::InitConfig
     ha_bootstrap_role = 0;
     ha_log_dir = "";
     ha_election_timeout_ms = 500;
-    ha_snapshot_interval_s = 3600 * 24;
+    ha_snapshot_interval_s = 3600 * 24 * 7;
     ha_heartbeat_interval_ms = 1000;
     ha_node_offline_ms = 600 * 1000;
     ha_node_remove_ms = 1200 * 1000;
     ha_node_join_group_s = 10;
     ha_is_witness = false;
     ha_enable_witness_to_leader = false;
+    ha_first_snapshot_start_time = "";
 
     // bolt
     bolt_port = 0;
-    bolt_thread_num = 10;
+    bolt_io_thread_num = 1;
+    // default disable plugin load/delete
+    enable_plugin = false;
+    bolt_raft_port = 0;
+    bolt_raft_node_id = 0;
+
+    bolt_raft_tick_interval = 100;
+    bolt_raft_election_tick = 10;
+    bolt_raft_heartbeat_tick = 1;
+
+    bolt_raft_logstore_cache = 1024;  // MB
+    bolt_raft_logstore_threads = 4;
+    bolt_raft_logstore_keep_logs = 1000000;
+    bolt_raft_logstore_gc_interval = 10;  // Minute
 
     // parse options
     fma_common::Configuration argparser;
@@ -270,7 +289,7 @@ fma_common::Configuration lgraph::GlobalConfig::InitConfig
     argparser.Add(snapshot_dir, "snapshot_dir", true)
         .Comment("Directory to store the snapshot files.");
     argparser.Add(thread_limit, "thread_limit", true)
-        .Comment("Maximum number of threads to use");
+        .Comment("Maximum number of threads to use in http web server");
     argparser.Add(unlimited_token, "unlimited_token", true)
         .Comment("Unlimited token for TuGraph.");
     argparser.Add(reset_admin_password, "reset_admin_password", true)
@@ -317,9 +336,45 @@ fma_common::Configuration lgraph::GlobalConfig::InitConfig
         .Comment("Node is witness (donot have data & can not apply request) or not.");
     argparser.Add(ha_enable_witness_to_leader, "ha_enable_witness_to_leader", true)
         .Comment("Node is witness (donot have data & can not apply request) or not.");
+    argparser.Add(ha_first_snapshot_start_time, "ha_first_snapshot_start_time", true)
+        .Comment(R"("First snapshot start time whose format is "HH:MM:SS", and the default value is "
+            "" indicating a random time.)");
     argparser.Add(bolt_port, "bolt_port", true)
         .Comment("Bolt protocol port.");
-    argparser.Add(bolt_thread_num, "bolt_thread_num", true)
-        .Comment("bolt thread pool size.");
+    argparser.Add(bolt_io_thread_num, "bolt_io_thread_num", true)
+        .Comment("Number of bolt io threads.");
+    argparser.Add(enable_plugin, "enable_plugin", true)
+        .Comment("Enable load/delete procedure.");
+    argparser.Add(browser_options.credential_timeout, "browser.credential_timeout", true)
+        .Comment("Config the timeout of browser credentials stored in local storage.");
+    argparser.Add(browser_options.retain_connection_credentials,
+                  "browser.retain_connection_credentials", true)
+        .Comment("Config browser whether to store user credentials in local storage.");
+    argparser.Add(is_cypher_v2,
+                  "is_cypher_v2", true)
+        .Comment("Config browser whether to store user credentials in local storage.");
+    argparser.Add(bolt_raft_port, "bolt_raft_port", true)
+    .Comment("Bolt raft port.");
+    argparser.Add(bolt_raft_node_id, "bolt_raft_node_id", true)
+    .Comment("Bolt raft node id.");
+    argparser.Add(bolt_raft_init_peers, "bolt_raft_init_peers", true)
+    .Comment("Bolt raft initial member information.");
+
+    argparser.Add(bolt_raft_tick_interval, "bolt_raft_tick_interval", true)
+        .Comment("Bolt raft tick interval.");
+    argparser.Add(bolt_raft_heartbeat_tick, "bolt_raft_heartbeat_tick", true)
+        .Comment("Bolt raft heartbeat tick.");
+    argparser.Add(bolt_raft_election_tick, "bolt_raft_election_tick", true)
+        .Comment("Bolt raft election tick.");
+
+    argparser.Add(bolt_raft_logstore_cache, "bolt_raft_logstore_cache", true)
+        .Comment("Bolt raft logstore cache in MB.");
+    argparser.Add(bolt_raft_logstore_threads, "bolt_raft_logstore_threads", true)
+        .Comment("Bolt raft logstore threads.");
+    argparser.Add(bolt_raft_logstore_keep_logs, "bolt_raft_logstore_keep_logs", true)
+        .Comment("Maximum number of raft logs to keep.");
+    argparser.Add(bolt_raft_logstore_gc_interval, "bolt_raft_logstore_gc_interval", true)
+        .Comment("Interval of checking and GC raft log.");
+
     return argparser;
 }

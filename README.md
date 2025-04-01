@@ -1,8 +1,7 @@
 # TuGraph
 
 [![Release](https://shields.io/github/v/release/tugraph-family/tugraph-db.svg?logo=stackblitz&label=Version&color=red)](https://github.com/TuGraph-family/tugraph-db/releases)
-[![Unit Test](https://github.com/TuGraph-family/tugraph-db/actions/workflows/ci_ut.yml/badge.svg)](https://github.com/TuGraph-family/tugraph-db/actions/workflows/ci_ut.yml)
-[![Integration Test](https://github.com/TuGraph-family/tugraph-db/actions/workflows/ci_it.yml/badge.svg)](https://github.com/TuGraph-family/tugraph-db/actions/workflows/ci_it.yml)
+[![UT&&IT](https://github.com/TuGraph-family/tugraph-db/actions/workflows/ci.yml/badge.svg)](https://github.com/TuGraph-family/tugraph-db/actions/workflows/ci.yml)
 [![Documentation Status](https://readthedocs.org/projects/tugraph-db/badge/?version=latest)](https://tugraph-db.readthedocs.io/en/latest/?badge=latest)
 [![Commit](https://badgen.net/github/last-commit/tugraph-family/tugraph-db/master?icon=git&label=Commit)](https://github.com/TuGraph-family/tugraph-db/commits/master)
 [![codecov](https://codecov.io/gh/TuGraph-family/tugraph-db/branch/master/graph/badge.svg?token=JH78ARWZAQ)](https://codecov.io/gh/TuGraph-family/tugraph-db)
@@ -14,11 +13,11 @@
 [![License](https://shields.io/github/license/tugraph-family/tugraph-db?logo=apache&label=License&color=blue)](https://www.apache.org/licenses/LICENSE-2.0.html)
 
 [![EN](https://shields.io/badge/Docs-English-blue?logo=readme)](https://tugraph-db.readthedocs.io/en/latest)
-[![CN](https://shields.io/badge/Docs-中文-blue?logo=readme)](https://tugraph-db.readthedocs.io/en/latest)
+[![CN](https://shields.io/badge/Docs-中文-blue?logo=readme)](https://tugraph-db.readthedocs.io/zh-cn/latest)
 
 [[中文版]](README_CN.md)
 
-:mega: **TuGraph-db [Free Trial](https://computenest.console.aliyun.com/user/cn-hangzhou/serviceInstanceCreate?ServiceId=service-7b50ea3d20e643da95bf&ServiceVersion=1&isTrial=true) on Aliyun with [Guide](https://aliyun-computenest.github.io/quickstart-tugraph/)**.
+:mega: **TuGraph-db [Free Trial](https://computenest.console.aliyun.com/service/detail/cn-hangzhou/service-7b50ea3d20e643da95bf?type=user&isRecommend=true) on Aliyun with [Guide](https://aliyun-computenest.github.io/quickstart-tugraph/)**.
 
 ## 1. Introduction
 TuGraph is an efficient graph database that supports high data volume, low latency lookup and fast graph analytics.
@@ -44,20 +43,19 @@ You can find TuGraph's doc by [link](https://tugraph-db.readthedocs.io/en/latest
 ## 2. Quick Start
 
 An easy way to start is using docker to set up, which can be found in [DockerHub](https://hub.docker.com/u/tugraph), named `tugraph/tugraph-runtime-[os]:[tugraph version]`,
-for example, `tugraph/tugraph-runtime-centos7:3.3.0`.
+for example, `tugraph/tugraph-runtime-centos7:4.5.1`.
 
-For more details, please refer to [quick start doc](docs/en-US/source/3.quick-start/1.preparation.md).
+For more details, please refer to [quick start doc](docs/en-US/source/3.quick-start/1.preparation.md) and [development guide](./docs/zh-CN/source/development_guide.md).
 
 ## 3. Build from Source
 
 It's recommended to build TuGraph in linux system, and docker environment is a good choice. If you want to setup a new environment, please refer to [Dockerfile](ci/images).
 
 Here are steps to compile TuGraph:
-1. `deps/build_deps.sh` or to skip building web interface `SKIP_WEB=1 deps/build_deps.sh` 
-2. `cmake .. -DOURSYSTEM=centos` or `cmake .. -DOURSYSTEM=ubuntu`
-3. If support shell lgraph_cypher, use `-DENABLE_PREDOWNLOAD_DEPENDS_PACKAGE=1`
-4. `make`
-5. `make package` or `cpack --config CPackConfig.cmake`
+1. run `deps/build_deps.sh` to build tugraph-web if you need. Skip this step otherwise.
+2. `cmake .. -DOURSYSTEM=centos7` or `cmake .. -DOURSYSTEM=ubuntu`
+3. `make`
+4. `make package` or `cpack --config CPackConfig.cmake`
 
 Example:
 `tugraph/tugraph-compile-centos7`Docker environment
@@ -67,7 +65,7 @@ $ git clone --recursive https://github.com/TuGraph-family/tugraph-db.git
 $ cd tugraph-db
 $ deps/build_deps.sh
 $ mkdir build && cd build
-$ cmake .. -DOURSYSTEM=centos -DENABLE_PREDOWNLOAD_DEPENDS_PACKAGE=1
+$ cmake .. -DOURSYSTEM=centos7
 $ make
 $ make package
 ```
@@ -75,38 +73,51 @@ $ make package
 ## 4. Develop
 
 We have prepared environment docker images for compiling in DockerHub, named `tugraph/tugraph-compile-[os]:[compile version]`, 
-for example, `tugraph/tugraph-compile-centos7:1.1.0`, which can help developers get started easily.
+for example, `tugraph/tugraph-compile-centos7:1.3.4`, which can help developers get started easily.
 
-We have a [roadmap](docs/en-US/source/6.contributor-manual/5.roadmap.md) to help you understand TuGraph.
+We have a [roadmap](docs/en-US/source/12.contributor-manual/5.roadmap.md) to help you understand TuGraph.
 
-To contribute, please read [doc](docs/en-US/source/6.contributor-manual/1.contributing.md).
+To contribute, please read [doc](docs/en-US/source/12.contributor-manual/1.contributing.md).
 
 NOTICE: If you want to contribute code, you should sign a [cla doc](https://cla-assistant.io/TuGraph-db/tugraph-db).
 
-## 5. Contact
+## 5. Partners
 
-Email: tugraph@service.alipay.com
+<table cellspacing="0" cellpadding="0">
+  <tr align="center">
+    <td height="80"><a href="https://github.com/CGCL-codes/YiTu"><img src="docs/images/partners/hust.png" width="300" alt="HUST" /></a></td>
+    <td height="80"><a href="http://kw.fudan.edu.cn/"><img src="docs/images/partners/fu.png" width="300" alt="FU" /></a></td>
+    <td height="80"><img src="docs/images/partners/zju.png" width="300" alt="ZJU" /></td>
+  </tr>
+  <tr align="center">
+    <td height="80"><a href="http://www.whaleops.com/"><img src="docs/images/partners/whaleops.png" width="300" alt="WhaleOps" /></a></td>
+    <td height="80"><a href="https://github.com/oceanbase/oceanbase"><img src="docs/images/partners/oceanbase.png" width="300" alt="OceanBase" /></a></td>
+    <td height="80"><a href="https://github.com/secretflow/secretflow"><img src="docs/images/partners/secretflow.png" width="300" alt="SecretFlow" /></a></td>
+  </tr>
+  <tr>
+    <td height="80"><a href="https://hellogithub.com/repository/1816669a47354a158b49f8887f91bcf5" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=1816669a47354a158b49f8887f91bcf5&claim_uid=vC6zMAZ9So3YN01" alt="Featured｜HelloGitHub" width="300" /></a></td>
+  </tr>
+</table>
 
-Official Website: [www.tugraph.org](https://www.tugraph.org)
+## 6. Contact
 
-Github Issue (For bug report and feature request)
-[Issue](https://github.com/TuGraph-db/tugraph-db/issues)
-
-Github Discussions (For general technical discussion)
-[Discussions](https://github.com/TuGraph-db/tugraph-db/discussions)
+Official Website: [tugraph.tech](https://tugraph.tech)
 
 Slack (For developer quick communication):
 [TuGraph.slack](https://join.slack.com/t/tugraph/shared_invite/zt-1hha8nuli-bqdkwn~w4zH1vlk0QvqIfg)
 
-DingTalk Group (For general technical discussion)
+Contact us via dingtalk, wechat, email and telephone:
+![contacts](./docs/images/contact-en.png)
 
-![alert](./docs/images/dingtalk.png)
+## 7. Acknowledgement
 
-WeChat Group (For general technical discussion)
+Thanks to all the individual developers who have contributed to this repository, which are listed below.
 
-![alert](./docs/images/wechat_tech.png)
+<a href="https://github.com/TuGraph-family/tugraph-db/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=TuGraph-family/tugraph-db" />
+</a>
 
-WeChat Official Account (For announcement)
+Made with [contrib.rocks](https://contrib.rocks).
 
-![alert](./docs/images/wechat.png)
+
 

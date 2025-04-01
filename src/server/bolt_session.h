@@ -28,13 +28,26 @@ enum class SessionState {
     CONNECTED,
     READY,
     STREAMING,
-    FAILED
+    FAILED,
+    INTERRUPTED
+};
+
+struct BoltMsgDetail {
+    BoltMsg type;
+    std::vector<std::any> fields;
+    int64_t n = -1;
+    std::vector<uint8_t> raw_data;
 };
 
 struct BoltSession {
+    std::optional<BoltMsgDetail> streaming_msg;
+    PackStream ps;
     std::string user;
     SessionState state;
-    BlockingQueue<BoltMsg> msgs;
+    BlockingQueue<BoltMsgDetail> msgs;
+    std::thread fsm_thread;
+    bool python_driver = false;
+    bool using_default_user_password = false;
 };
 
 }  // namespace bolt

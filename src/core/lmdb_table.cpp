@@ -70,7 +70,7 @@ bool LMDBKvTable::HasKey(KvTransaction& txn, const Value& key) {
     auto& lmdb_txn = static_cast<LMDBKvTransaction&>(txn);
     if (!lmdb_txn.read_only_ && lmdb_txn.optimistic_) {
         // treat empty key as we would in lmdb
-        if (key.Empty()) throw KvException(MDB_INVALID);
+        if (key.Empty()) THROW_CODE(KvException, mdb_strerror(MDB_INVALID));
         DeltaStore& delta = lmdb_txn.GetDelta(*this);
         auto status_value = delta.Get(key);
         if (status_value.first != 0) {
@@ -82,6 +82,26 @@ bool LMDBKvTable::HasKey(KvTransaction& txn, const Value& key) {
     int ec = mdb_get(lmdb_txn.GetTxn(), dbi_, &k, &val);
     if (ec == MDB_SUCCESS) return true;
     if (ec == MDB_NOTFOUND) return false;
+    THROW_ERR(ec);
+    return false;
+}
+
+bool LMDBKvTable::GetValue(KvTransaction& txn, const Value& key, Value& value) {
+    ThrowIfTaskKilled();
+    auto& lmdb_txn = static_cast<LMDBKvTransaction&>(txn);
+    if (lmdb_txn.optimistic_) {
+        THROW_CODE(KvException, "GetValue does not support optimistic txn");
+    }
+    MDB_val val;
+    MDB_val k = key.MakeMdbVal();
+    int ec = mdb_get(lmdb_txn.GetTxn(), dbi_, &k, &val);
+    if (ec == MDB_SUCCESS) {
+        value.AssignConstRef((char*)val.mv_data + sizeof(size_t), val.mv_size - sizeof(size_t));
+        return true;
+    }
+    if (ec == MDB_NOTFOUND) {
+        return false;
+    }
     THROW_ERR(ec);
     return false;
 }
@@ -184,7 +204,7 @@ bool LMDBKvTable::DeleteKey(KvTransaction& txn, const Value& key) {
     ThrowIfTaskKilled();
     auto& lmdb_txn = static_cast<LMDBKvTransaction&>(txn);
     if (!lmdb_txn.read_only_ && lmdb_txn.optimistic_) {
-        if (key.Empty()) throw KvException(MDB_INVALID);
+        if (key.Empty()) THROW_CODE(KvException, mdb_strerror(MDB_INVALID));
         DeltaStore& delta = lmdb_txn.GetDelta(*this);
         auto it = delta.write_set_.find(key);
         if (it != delta.write_set_.end()) {
@@ -232,6 +252,14 @@ int LMDBKvTable::CompareKey(KvTransaction& txn, const Value& k1, const Value& k2
     MDB_val b = k2.MakeMdbVal();
     auto& lmdb_txn = static_cast<LMDBKvTransaction&>(txn);
     return mdb_cmp(lmdb_txn.GetTxn(), dbi_, &a, &b);
+}
+
+void LMDBKvTable::Delete(KvTransaction& txn) {
+    auto& lmdb_txn = static_cast<LMDBKvTransaction&>(txn);
+    THROW_ON_ERR(mdb_drop(lmdb_txn.GetTxn(), dbi_, 1));
+    // write wal
+    if (lmdb_txn.GetWal())
+        lmdb_txn.GetWal()->WriteTableDrop(dbi_);
 }
 
 void LMDBKvTable::Drop(KvTransaction& txn) {

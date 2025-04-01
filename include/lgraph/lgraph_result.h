@@ -36,6 +36,15 @@ namespace lgraph_api {
 
 struct ResultElement;
 
+namespace lgraph_result {
+struct Node;
+struct Relationship;
+}
+
+typedef std::unordered_map<size_t, std::shared_ptr<lgraph_result::Node>> NODEMAP;
+typedef std::unordered_map<EdgeUid, std::shared_ptr<lgraph_result::Relationship>,
+        EdgeUid::Hash> RELPMAP;
+
 /**
  * @brief   You only initialize the class by Result instance. Record provide some insert method
  *          to insert data to the record. eg. Insert, InsertVertexByID, InsertEdgeByID.
@@ -49,7 +58,6 @@ class Record {
 
  public:
     friend class Result;
-
     Record(const Record &);
     Record(Record &&);
     Record &operator=(const Record &);
@@ -156,7 +164,9 @@ class Record {
      * @param  txn      Trasaction
      */
     void Insert(const std::string &fname, const traversal::Path &path,
-                lgraph_api::Transaction* txn);
+                lgraph_api::Transaction* txn,
+                NODEMAP& node_map,
+                RELPMAP& relp_map);
 #endif
 
     /**
@@ -195,6 +205,8 @@ class Result {
     std::vector<Record> result;
     std::vector<std::pair<std::string, LGraphType>> header;
     int64_t row_count_;
+    bool is_python_driver_ = false;
+    int64_t v_eid_ = 0;  // virtual edge id
 
  public:
     Result();
@@ -237,6 +249,25 @@ class Result {
     Record *MutableRecord();
 
     /**
+     * @brief   This function attempts to reserve enough memory for the result vector to hold
+     *          the specified number of elements.
+     *
+     */
+    void Reserve(size_t n);
+
+    /**
+     * @brief   This function will resize the vector to the specified number of elements
+     *
+     */
+    void Resize(size_t n);
+
+    /**
+     * @brief   Provides access to the data contained in the vector.
+     *
+     */
+    Record* At(size_t n);
+
+    /**
      * @brief   return header of the table.
      *
      * @returns header.
@@ -269,8 +300,20 @@ class Result {
      */
     void Load(const std::string &json);
 
+    /**
+     * @brief Clear all the records, Size() will be 0.
+     */
+    void ClearRecords();
+
     std::vector<std::string> BoltHeader();
     std::vector<std::vector<std::any>> BoltRecords();
+    /**
+     * @brief Mark that the result is returned to python driver.
+     *  Python driver is special, use the virtual edge id instead of the real edge id
+     */
+    void MarkPythonDriver(bool is_python_driver) {
+        is_python_driver_ = is_python_driver;
+    }
 
  private:
     /**
